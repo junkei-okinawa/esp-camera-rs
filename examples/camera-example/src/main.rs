@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     info!("initializing peripherals");
-    let peripherals = Peripherals::take().unwrap();
+    let mut peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
@@ -44,26 +44,24 @@ fn main() -> anyhow::Result<()> {
     led.set_low()?;
 
     info!("Initialize the camera");
-    let camera = esp_camera_rs::Camera::new(
-        None,
-        peripherals.pins.gpio15,
-        peripherals.pins.gpio11,
-        peripherals.pins.gpio9,
-        peripherals.pins.gpio8,
-        peripherals.pins.gpio10,
-        peripherals.pins.gpio12,
-        peripherals.pins.gpio18,
-        peripherals.pins.gpio17,
-        peripherals.pins.gpio16,
-        peripherals.pins.gpio6,
-        peripherals.pins.gpio7,
-        peripherals.pins.gpio13,
-        peripherals.pins.gpio4,
-        peripherals.pins.gpio5,
-        esp_idf_sys::camera::pixformat_t_PIXFORMAT_JPEG,
-        esp_idf_sys::camera::framesize_t_FRAMESIZE_UXGA,
-        esp_idf_sys::camera::camera_fb_location_t_CAMERA_FB_IN_PSRAM,
-    )?;
+
+    let camera_params = esp_camera_rs::CameraParams::new()
+        .set_clock_pin(&mut peripherals.pins.gpio15)
+        .set_d0_pin(&mut peripherals.pins.gpio11)
+        .set_d1_pin(&mut peripherals.pins.gpio9)
+        .set_d2_pin(&mut peripherals.pins.gpio8)
+        .set_d3_pin(&mut peripherals.pins.gpio10)
+        .set_d4_pin(&mut peripherals.pins.gpio12)
+        .set_d5_pin(&mut peripherals.pins.gpio18)
+        .set_d6_pin(&mut peripherals.pins.gpio17)
+        .set_d7_pin(&mut peripherals.pins.gpio16)
+        .set_vertical_sync_pin(&mut peripherals.pins.gpio6)
+        .set_horizontal_reference_pin(&mut peripherals.pins.gpio7)
+        .set_pixel_clock_pin(&mut peripherals.pins.gpio13)
+        .set_sda_pin(&mut peripherals.pins.gpio4)
+        .set_scl_pin(&mut peripherals.pins.gpio5);
+
+    let camera = esp_camera_rs::Camera::new(&camera_params)?;
 
     info!("initializing http servert");
 

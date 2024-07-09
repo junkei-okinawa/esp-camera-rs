@@ -1,4 +1,6 @@
-This example assumes you have already set up all the tools necessary to compile Rust for ESP32. Follow [The Rust on ESP Book](https://docs.esp-rs.org/book/) for setup steps.
+This example is set up for ESP32S3, but you can run it on other ESP32 chips by changing `.cargo/config.toml` and `sdkconfig.defaults` the camera's pins should be changed as well.
+
+To build and run the example you need to set up all the tools necessary to compile Rust for ESP32. Follow [The Rust on ESP Book](https://docs.esp-rs.org/book/) for setup steps.
 
 When you need to export `WIFI_SSID` and `WIFI_PASS` environment variables and run the example by using `cargo run -r`, it will compile and flash the program to an ESP32S3 with a camera. The pins are set up for this [Freenove board](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board).
 
