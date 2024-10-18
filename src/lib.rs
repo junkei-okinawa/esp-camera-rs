@@ -32,8 +32,8 @@ impl<'a> Camera<'a> {
             pixel_format: params.pixel_format,
             frame_size: params.frame_size,
 
-            jpeg_quality: 12,
-            fb_count: 1,
+            jpeg_quality: params.jpeg_quality,
+            fb_count: params.fb_count,
             grab_mode: camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY,
 
             fb_location: params.fb_location,
@@ -154,7 +154,7 @@ impl<'a> CameraSensor<'a> {
         esp!(unsafe { (*self.sensor).reset.unwrap()(self.sensor) })
     }
     define_get_set_function!(framesize, set_framesize, camera::framesize_t);
-    define_set_function!(set_pixformat, camera::pixformat_t);
+    //define_set_function!(set_pixformat, camera::pixformat_t); // doesn't work on my board
     define_get_set_function!(contrast, set_contrast, i32);
     define_get_set_function!(brightness, set_brightness, i32);
     define_get_set_function!(saturation, set_saturation, i32);
@@ -273,6 +273,8 @@ pub struct CameraParams<'a> {
     pixel_format: camera::pixformat_t,
     frame_size: camera::framesize_t,
     fb_location: camera::camera_fb_location_t,
+    jpeg_quality: i32,
+    fb_count: usize,
     _p: PhantomData<&'a ()>,
 }
 
@@ -297,6 +299,8 @@ impl CameraParams<'static> {
             pixel_format: camera::pixformat_t_PIXFORMAT_JPEG,
             frame_size: camera::framesize_t_FRAMESIZE_UXGA,
             fb_location: camera::camera_fb_location_t_CAMERA_FB_IN_PSRAM,
+            jpeg_quality: 12,
+            fb_count: 1,
             _p: PhantomData,
         }
     }
@@ -305,13 +309,25 @@ impl CameraParams<'static> {
 macro_rules! define_set_pin_function {
     ($name:ident, $direction:ty) => {
         concat_idents::concat_idents!(
-            fn_name = set_,
-            $name,
-            _pin {
+            fn_name = set_, $name, _pin {
             pub fn fn_name(self, p: impl Peripheral<P = impl $direction> + 'a) -> CameraParams<'a> {
                 CameraParams {
                     $name: p.into_ref().pin(),
                     _p: PhantomData,
+                    ..self
+                }
+            }
+        });
+    };
+}
+
+macro_rules! define_set_plain_function {
+    ($name:ident, $type:ty) => {
+        concat_idents::concat_idents!(
+            fn_name = set_, $name {
+            pub fn fn_name(self, value: $type) -> Self {
+                CameraParams {
+                    $name: value,
                     ..self
                 }
             }
@@ -335,4 +351,9 @@ impl<'a> CameraParams<'a> {
     define_set_pin_function!(pixel_clock, IOPin);
     define_set_pin_function!(sda, IOPin);
     define_set_pin_function!(scl, OutputPin);
+    define_set_plain_function!(pixel_format, camera::pixformat_t);
+    define_set_plain_function!(frame_size, camera::framesize_t);
+    define_set_plain_function!(fb_location, camera::camera_fb_location_t);
+    define_set_plain_function!(jpeg_quality, i32);
+    define_set_plain_function!(fb_count, usize);
 }
