@@ -5,7 +5,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::{gpio::PinDriver, peripherals::Peripherals};
 use esp_idf_svc::http::server::{Configuration as HttpServerConfig, EspHttpServer};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi, PmfConfiguration, ScanMethod};
 use log::{error, info};
 use std::time::Duration;
 
@@ -30,6 +30,8 @@ fn main() -> anyhow::Result<()> {
         auth_method: AuthMethod::None,
         password: env!("WIFI_PASS").try_into().unwrap(),
         channel: None,
+        pmf_cfg: PmfConfiguration::Capable { required: true},
+        scan_method: ScanMethod::FastScan,
     }))?;
 
     wifi.start()?;
@@ -70,7 +72,7 @@ fn main() -> anyhow::Result<()> {
     let mut httpserver = EspHttpServer::new(&HttpServerConfig::default())?;
     info!("preocessing http requests");
 
-    httpserver.fn_handler("/", Method::Get, |request| {
+    httpserver.fn_handler("/", Method::Get, move |request| {
         info!("taking a picture");
         let (ref mut led, camera) = &mut *state.lock().unwrap();
 
