@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     info!("initializing peripherals");
-    let mut peripherals = Peripherals::take().unwrap();
+    let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         auth_method: AuthMethod::None,
         password: env!("WIFI_PASS").try_into().unwrap(),
         channel: None,
-        pmf_cfg: PmfConfiguration::Capable { required: true},
+        pmf_cfg: PmfConfiguration::Capable { required: true },
         scan_method: ScanMethod::FastScan,
     }))?;
 
@@ -48,30 +48,29 @@ fn main() -> anyhow::Result<()> {
     info!("Initialize the camera");
 
     let camera_params = esp_camera_rs::CameraParams::new()
-        .set_clock_pin(&mut peripherals.pins.gpio15)
-        .set_d0_pin(&mut peripherals.pins.gpio11)
-        .set_d1_pin(&mut peripherals.pins.gpio9)
-        .set_d2_pin(&mut peripherals.pins.gpio8)
-        .set_d3_pin(&mut peripherals.pins.gpio10)
-        .set_d4_pin(&mut peripherals.pins.gpio12)
-        .set_d5_pin(&mut peripherals.pins.gpio18)
-        .set_d6_pin(&mut peripherals.pins.gpio17)
-        .set_d7_pin(&mut peripherals.pins.gpio16)
-        .set_vertical_sync_pin(&mut peripherals.pins.gpio6)
-        .set_horizontal_reference_pin(&mut peripherals.pins.gpio7)
-        .set_pixel_clock_pin(&mut peripherals.pins.gpio13)
-        .set_sda_pin(&mut peripherals.pins.gpio4)
-        .set_scl_pin(&mut peripherals.pins.gpio5);
+        .set_clock_pin(peripherals.pins.gpio15)
+        .set_d0_pin(peripherals.pins.gpio11)
+        .set_d1_pin(peripherals.pins.gpio9)
+        .set_d2_pin(peripherals.pins.gpio8)
+        .set_d3_pin(peripherals.pins.gpio10)
+        .set_d4_pin(peripherals.pins.gpio12)
+        .set_d5_pin(peripherals.pins.gpio18)
+        .set_d6_pin(peripherals.pins.gpio17)
+        .set_d7_pin(peripherals.pins.gpio16)
+        .set_vertical_sync_pin(peripherals.pins.gpio6)
+        .set_horizontal_reference_pin(peripherals.pins.gpio7)
+        .set_pixel_clock_pin(peripherals.pins.gpio13)
+        .set_sda_pin(peripherals.pins.gpio4)
+        .set_scl_pin(peripherals.pins.gpio5);
 
     let camera = esp_camera_rs::Camera::new(&camera_params)?;
 
     info!("initializing http servert");
-
+    //It's better to use camera from main loop, but for simplicity it is passed it to handler
     let state = std::sync::Arc::new(std::sync::Mutex::new((led, camera)));
-
     let mut httpserver = EspHttpServer::new(&HttpServerConfig::default())?;
-    info!("preocessing http requests");
 
+    info!("preocessing http requests");
     httpserver.fn_handler("/", Method::Get, move |request| {
         info!("taking a picture");
         let (ref mut led, camera) = &mut *state.lock().unwrap();

@@ -1,5 +1,3 @@
-// code updated from https://github.com/Kezii/esp32cam_rs/blob/master/src/espcam.rs
-
 use std::ffi::c_int;
 use std::marker::PhantomData;
 
@@ -8,7 +6,7 @@ use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_sys::*;
 
 impl<'a> Camera<'a> {
-    pub fn new(params: &CameraParams) -> Result<Self, esp_idf_sys::EspError> {
+    pub fn new(params: &CameraParams<'a>) -> Result<Self, esp_idf_sys::EspError> {
         let config = camera::camera_config_t {
             pin_pwdn: params.power,
             pin_xclk: params.clock,
@@ -25,7 +23,8 @@ impl<'a> Camera<'a> {
             pin_href: params.horizontal_reference,
             pin_pclk: params.pixel_clock,
 
-            xclk_freq_hz: 20_000_000,
+            xclk_freq_hz: params.xclk_freq_hz,
+
             ledc_timer: esp_idf_sys::ledc_timer_t_LEDC_TIMER_0,
             ledc_channel: esp_idf_sys::ledc_channel_t_LEDC_CHANNEL_0,
 
@@ -85,6 +84,10 @@ pub struct FrameBuffer<'a> {
 impl<'a> FrameBuffer<'a> {
     pub fn data(&self) -> &'a [u8] {
         unsafe { std::slice::from_raw_parts((*self.fb).buf, (*self.fb).len) }
+    }
+
+    pub fn data_mut(&mut self) -> &'a mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut((*self.fb).buf, (*self.fb).len) }
     }
 
     pub fn width(&self) -> usize {
@@ -268,6 +271,7 @@ pub struct CameraParams<'a> {
     vertical_sync: c_int,
     horizontal_reference: c_int,
     pixel_clock: c_int,
+    xclk_freq_hz: c_int,
     sda: c_int,
     scl: c_int,
     pixel_format: camera::pixformat_t,
@@ -294,6 +298,7 @@ impl CameraParams<'static> {
             vertical_sync: -1,
             horizontal_reference: -1,
             pixel_clock: -1,
+            xclk_freq_hz: 16_000_000, // It's a magic value on ESP32-S2 or ESP32-S3 to enable EDMA mode
             sda: -1,
             scl: -1,
             pixel_format: camera::pixformat_t_PIXFORMAT_JPEG,
@@ -356,4 +361,5 @@ impl<'a> CameraParams<'a> {
     define_set_plain_function!(fb_location, camera::camera_fb_location_t);
     define_set_plain_function!(jpeg_quality, i32);
     define_set_plain_function!(fb_count, usize);
+    define_set_plain_function!(xclk_freq_hz, i32);
 }
