@@ -1,16 +1,33 @@
-use embedded_svc::http::Method;
-use embedded_svc::io::Write;
-use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::{gpio::PinDriver, peripherals::Peripherals};
-use esp_idf_svc::http::server::{Configuration as HttpServerConfig, EspHttpServer};
+use esp_idf_svc::hal::{delay::FreeRtos, gpio::PinDriver, peripherals::Peripherals};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi, PmfConfiguration, ScanMethod};
+use esp_idf_svc::wifi::{EspWifi, BlockingWifi}; // BlockingWifiを追加
+use esp_idf_sys::{
+    esp_deep_sleep, esp_now_add_peer, esp_now_init, esp_now_peer_info_t,
+    esp_now_register_send_cb, esp_now_send, esp_now_send_status_t,
+    esp_now_send_status_t_ESP_NOW_SEND_SUCCESS,
+};
 use log::{error, info};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-const WIFI_SSID: &str = "nozomitsu";
-const WIFI_PASS: &str = "chigemotsu";
+// 不要になったSSID/PASSを削除
+const ESP_NOW_TARGET_MAC: [u8; 6] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+// 送信完了フラグ
+static SEND_COMPLETE: AtomicBool = AtomicBool::new(true); // 初期値は送信可能
+// 送信失敗フラグ（一度でも失敗したらtrue）
+static SEND_FAILED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn esp_now_send_cb(_mac_addr: *const u8, status: esp_now_send_status_t) {
+    if status == esp_now_send_status_t_ESP_NOW_SEND_SUCCESS {
+        info!("ESP-NOW: Send success");
+    } else {
+        error!("ESP-NOW: Send failed");
+        SEND_FAILED.store(true, Ordering::SeqCst); // 失敗フラグを立てる
+    }
+    SEND_COMPLETE.store(true, Ordering::SeqCst); // 送信完了（成功・失敗問わず）
+}
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -21,57 +38,20 @@ fn main() -> anyhow::Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    info!("initializing WiFi");
-    let mut wifi = BlockingWifi::wrap(
+    info!("initializing WiFi peripheral for ESP-NOW");
+    // Wi-Fiペリフェラルを初期化するだけで、接続はしない
+    let mut wifi = BlockingWifi::wrap( // BlockingWifiでラップ
         EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs))?,
         sysloop,
     )?;
+    wifi.start()?; // Wi-Fiを開始してペリフェラルを有効化
+    info!("WiFi peripheral started for ESP-NOW");
 
-    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: WIFI_SSID.try_into().unwrap(),
-        bssid: None,
-        auth_method: AuthMethod::None,
-        password: WIFI_PASS.try_into().unwrap(),
-        channel: None,
-        pmf_cfg: PmfConfiguration::Capable { required: true },
-        scan_method: ScanMethod::FastScan,
-    }))?;
 
-    wifi.start()?;
-    wifi.connect()?;
-    wifi.wait_netif_up()?;
-    info!(
-        "Wifi is ready, ip {:?}",
-        wifi.wifi().sta_netif().get_ip_info()?
-    );
-
-    // let mut led = PinDriver::output(peripherals.pins.gpio2)?;
     let mut led = PinDriver::output(peripherals.pins.gpio4)?;
     led.set_low()?;
 
     info!("Initialize the camera");
-
-    // let camera_params = esp_camera_rs::CameraParams::new()
-    //     .set_clock_pin(peripherals.pins.gpio15)
-    //     .set_d0_pin(peripherals.pins.gpio11)
-    //     .set_d1_pin(peripherals.pins.gpio9)
-    //     .set_d2_pin(peripherals.pins.gpio8)
-    //     .set_d3_pin(peripherals.pins.gpio10)
-    //     .set_d4_pin(peripherals.pins.gpio12)
-    //     .set_d5_pin(peripherals.pins.gpio18)
-    //     .set_d6_pin(peripherals.pins.gpio17)
-    //     .set_d7_pin(peripherals.pins.gpio16)
-    //     .set_vertical_sync_pin(peripherals.pins.gpio6)
-    //     .set_horizontal_reference_pin(peripherals.pins.gpio7)
-    //     .set_pixel_clock_pin(peripherals.pins.gpio13)
-    //     .set_sda_pin(peripherals.pins.gpio4)
-    //     .set_scl_pin(peripherals.pins.gpio5);
-
-    // example from micropython M5CAMERA settings
-    // # camera.init(0, format=camera.JPEG, framesize=camera.FRAME_QQVGA,
-    // #         sioc=23, siod=25, xclk=27, vsync=22, href=26, pclk=21,
-    // #         d0=32, d1=35, d2=34, d3=5, d4=39, d5=18, d6=36, d7=19,
-    // #         reset=15)
     let camera_params = esp_camera_rs::CameraParams::new()
         .set_clock_pin(peripherals.pins.gpio27)
         .set_d0_pin(peripherals.pins.gpio32)
@@ -90,47 +70,88 @@ fn main() -> anyhow::Result<()> {
         .set_frame_size(esp_idf_svc::sys::camera::framesize_t_FRAMESIZE_SVGA)
         .set_fb_location(esp_idf_svc::sys::camera::camera_fb_location_t_CAMERA_FB_IN_DRAM);
 
-    let camera = esp_camera_rs::Camera::new(&camera_params)?;
+    let camera = Arc::new(esp_camera_rs::Camera::new(&camera_params)?);
 
-    info!("initializing http servert");
-    //It's better to use camera from main loop, but for simplicity it is passed it to handler
-    let state = std::sync::Arc::new(std::sync::Mutex::new((led, camera)));
-    let mut httpserver = EspHttpServer::new(&HttpServerConfig::default())?;
+    info!("Initializing ESP-NOW");
+    unsafe {
+        esp_now_init();
+        esp_now_register_send_cb(Some(esp_now_send_cb));
 
-    info!("preocessing http requests");
-    httpserver.fn_handler("/", Method::Get, move |request| {
-        info!("taking a picture");
-        let (ref mut led, camera) = &mut *state.lock().unwrap();
+        let mut peer_info = esp_now_peer_info_t::default();
+        peer_info.channel = 0; // 0を指定すると現在のチャンネルを使用
+        peer_info.ifidx = esp_idf_sys::wifi_interface_t_WIFI_IF_STA; // STAインターフェースを使用
+        peer_info.encrypt = false;
+        peer_info.peer_addr = ESP_NOW_TARGET_MAC;
+        esp_now_add_peer(&peer_info);
+    }
 
+    loop {
+        SEND_FAILED.store(false, Ordering::SeqCst); // ループ開始時に失敗フラグをリセット
+        info!("Taking a picture");
         led.set_high()?;
         let _ = camera.get_framebuffer(); // 1枚目は捨てる
-        std::thread::sleep(Duration::from_millis(100));
-        let framebuffer = camera.get_framebuffer();
-        std::thread::sleep(Duration::from_millis(100));
-        led.set_low()?;
-        std::thread::sleep(Duration::from_millis(100));
-        led.set_high()?;
-        std::thread::sleep(Duration::from_millis(100));
-        led.set_low()?;
-        if let Some(framebuffer) = framebuffer {
+        FreeRtos::delay_ms(100);
+        if let Some(framebuffer) = camera.get_framebuffer() {
             info!(
-                "took picture: {width}x{height} {size} bytes",
+                "Took picture: {width}x{height} {size} bytes",
                 width = framebuffer.width(),
                 height = framebuffer.height(),
                 size = framebuffer.data().len(),
             );
-            let mut response =
-                request.into_response(200, Some("Ok"), &[("Content-Type", "image/jpeg")])?;
-            response.write_all(framebuffer.data())
-        } else {
-            error!("failed to take image");
-            let mut response = request.into_status_response(500)?;
-            response.write_all(b"camera failed")
-        }
-        .map(|_| ())
-    })?;
+            led.set_low()?;
+            FreeRtos::delay_ms(100);
+            led.set_high()?;
+            FreeRtos::delay_ms(100);
+            led.set_low()?;
 
-    loop {
-        std::thread::sleep(Duration::from_millis(1000));
+            let data = framebuffer.data();
+            let chunk_size = 250; // ESP-NOWの最大データ長
+            let mut send_error_in_loop = false;
+
+            for chunk in data.chunks(chunk_size) {
+                // 前回の送信完了を待つ
+                while !SEND_COMPLETE.load(Ordering::SeqCst) {
+                    FreeRtos::delay_ms(1); // CPU負荷軽減のため少し待つ
+                }
+                SEND_COMPLETE.store(false, Ordering::SeqCst); // 送信開始
+
+                unsafe {
+                    let result = esp_now_send(ESP_NOW_TARGET_MAC.as_ptr(), chunk.as_ptr(), chunk.len());
+                    if result != 0 {
+                        error!("ESP-NOW send queue failed: {}", result);
+                        SEND_COMPLETE.store(true, Ordering::SeqCst); // エラーでもフラグを立てる
+                        SEND_FAILED.store(true, Ordering::SeqCst); // 失敗フラグを立てる
+                        send_error_in_loop = true;
+                        break; // キューイングエラーが発生したら送信中断
+                    }
+                    // 送信成功時はコールバックでSEND_COMPLETEがtrueになるのを待つ
+                }
+            }
+
+            // 最後のチャンクの送信完了を待つ (キューイングエラーがなかった場合のみ)
+            if !send_error_in_loop {
+                while !SEND_COMPLETE.load(Ordering::SeqCst) {
+                    FreeRtos::delay_ms(1);
+                }
+            }
+
+            // コールバックで設定された失敗フラグを確認
+            if SEND_FAILED.load(Ordering::SeqCst) {
+                error!("Failed to send all chunks (Callback reported failure).");
+            } else if send_error_in_loop {
+                 error!("Failed to send all chunks (Queueing failed).");
+            }
+             else {
+                info!("All chunks sent successfully.");
+            }
+
+        } else {
+            error!("Failed to take image");
+        }
+
+        info!("Entering Deep Sleep for 10 minutes...");
+        unsafe {
+            esp_deep_sleep(10 * 60 * 1000 * 1000); // 10分
+        }
     }
 }
