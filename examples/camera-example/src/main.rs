@@ -11,8 +11,7 @@ use log::{error, info};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-// 不要になったSSID/PASSを削除
-const ESP_NOW_TARGET_MAC: [u8; 6] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+const ESP_NOW_TARGET_MAC: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 受信側のMACアドレスに更新
 
 // 送信完了フラグ
 static SEND_COMPLETE: AtomicBool = AtomicBool::new(true); // 初期値は送信可能
