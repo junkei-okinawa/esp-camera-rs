@@ -39,4 +39,3 @@ esp-idf-sys = "0.35"
 embedded-svc = "0.28"
 
 esp-camera-rs = { path = "/Users/junkei/Documents/esp_learning/esp-camera-rs2" }
-

@@ -16,11 +16,12 @@ opt-level = "z"
 [dependencies]
 log = { version = "0.4", default-features = false }
 anyhow = "1.0"
-esp-idf-svc = { version = "0.49.1", default-features = false, features = ["binstart", "std"] } # esp_now featureは不要
-esp-idf-sys = "0.35" # features = ["esp_now"] は不要 (esp_now関数はデフォルトで利用可能)
-embedded-svc = "0.28" # Wi-Fi初期化に必要
-
-# esp-camera-rs は不要なので削除
+# esp-idf-svc のみに依存し、他は推移的に依存させる
+# esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git", tag = "v0.51.0", default-features = false, features = ["binstart", "std"] } # 最新バージョンに戻す
+esp-idf-svc = { version = "0.49.1", default-features = false, features = ["binstart", "std"] }
+embedded-svc = "0.28"
+sha2 = "0.10" # Add sha2 for hashing
+hex = "0.4" # Add hex for hash string conversion
 
 [build-dependencies]
-embuild = "0.32"
+embuild = { version = "0.32", features = ["espidf"] } # espidf feature を追加
