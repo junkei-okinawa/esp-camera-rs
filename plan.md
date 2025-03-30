@@ -50,10 +50,6 @@ graph TD
 - `esp_now_send()`
 - `esp_deep_sleep()`
 
-## 備考 (送信側)
-- 送信先のMACアドレス: 受信側のMACアドレス (`24:EC:4A:CA:91:45`)
-- 使用するESP32開発ボード: M5Stack Camera (`/dev/tty.usbserial-588D0339181`)
-
 ---
 
 # ESP-NOW画像受信アプリケーション (`image_receiver`) 作成計画
@@ -111,7 +107,6 @@ graph TD
 
 ## 備考 (受信側)
 - 使用するESP32開発ボード: ESP32-C3
-- ポート: `/dev/tty.usbmodem1101`
 - UARTピン: (実装時に指定)
 - UARTボーレート: (実装時に指定、例: 115200)
 
@@ -145,12 +140,11 @@ ESP32 (`image_receiver`) からUART経由で送信される画像データチャ
 # 結合テスト計画 (改訂)
 
 1.  **物理接続:** ESP32 (`image_receiver`) と Raspberry Pi をUARTで接続する (GND共通、TX-RX接続、電圧レベル確認)。
-2.  **送信側 (`camera-example`):**
-    *   対象デバイス: M5Stack Camera (`/dev/tty.usbserial-588D0339181`)
-    *   送信先MACアドレス: `24:EC:4A:CA:91:45` (受信側のMACアドレス)
+2.  **送信側 (`camera-sender`):**
+    *   送信先MACアドレス: `XX:XX:XX:XX:XX:XX` (受信側のMACアドレス)
     *   ファームウェアを書き込む。
 3.  **受信側 (`image_receiver`):**
-    *   対象デバイス: ESP32-C3 (`/dev/tty.usbmodem1101`)
+    *   対象デバイス: ESP32-C3
     *   UART転送ロジックを含むファームウェアを書き込む。
 4.  **Raspberry Pi:**
     *   受信用のPythonスクリプトを実行する。

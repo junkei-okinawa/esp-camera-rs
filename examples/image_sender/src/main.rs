@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc; // Arcを再度インポート
 use std::time::{Duration, Instant}; // Add Instant for timing
 
-const ESP_NOW_TARGET_MAC: [u8; 6] = [0x24, 0xEC, 0x4A, 0xCA, 0x91, 0x44]; // 受信側のSTA MACアドレス
+const ESP_NOW_TARGET_MAC: [u8; 6] = [0xXX, 0xXX, 0xXX, 0xXX, 0xXX, 0xXXXX]; // 受信側のSTA MACアドレス
 
 // 送信完了フラグ
 static SEND_COMPLETE: AtomicBool = AtomicBool::new(true);
@@ -47,18 +47,6 @@ fn main() -> anyhow::Result<()> {
     )?;
     wifi.start()?;
     info!("WiFi peripheral started for ESP-NOW");
-
-    // データレート設定をコメントアウト
-    /*
-    unsafe {
-        let result = esp_wifi_config_espnow_rate(wifi_interface_t_WIFI_IF_STA, wifi_phy_rate_t_WIFI_PHY_RATE_MCS0_LGI);
-        if result == esp_idf_svc::sys::ESP_OK {
-            info!("Successfully set ESP-NOW rate");
-        } else {
-            error!("Failed to set ESP-NOW rate: {}", result);
-        }
-    }
-    */
 
     // LEDを再度有効化
     let mut led = PinDriver::output(peripherals.pins.gpio4)?;
