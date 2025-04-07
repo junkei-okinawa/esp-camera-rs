@@ -1,7 +1,7 @@
 [package]
 name = "image-sender"
 version = "0.1.0"
-authors = ["Mikhail Modin <mikhailm1@gmail.com", "Mathias Pius <contact@pius.io>"]
+authors = ["junkei-okinawa<ceazy.x2.okinawan@gmail.com>"]
 edition = "2021"
 resolver = "2"
 rust-version = "1.71"
@@ -14,20 +14,19 @@ debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
 
 [dependencies]
-log = { version = "0.4", default-features = false }
 anyhow = "1.0"
-esp-idf-svc = { version = "0.49.1", default-features = false, features = [
-    "binstart",
-    "std"
-] }
-esp-idf-sys = "0.35"
+log = "0.4"
+toml-cfg = "=0.2"
+esp-idf-svc = "0.51.0"
+esp-idf-sys = "0.36"
 embedded-svc = "0.28"
 sha2 = "0.10" # Add sha2 for hashing
 
-esp-camera-rs = { git = "https://github.com/junkei-okinawa/esp-camera-rs.git" }
+# esp-camera-rs = { git = "https://github.com/junkei-okinawa/esp-camera-rs.git" }
 # Uncomment next string to use local version of the lib.
 # You also need to run `git submodule init` and `git submodule update`
-#esp-camera-rs = { path = "../../" }
+esp-camera-rs = { path = "../../" }
 
 [build-dependencies]
-embuild = "0.32"
+embuild = "0.33"
+toml-cfg = "=0.2"

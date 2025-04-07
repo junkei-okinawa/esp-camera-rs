@@ -23,8 +23,9 @@ use std::sync::mpsc::{channel, Sender, Receiver}; // Import mpsc channel
 use sha2::{Digest, Sha256}; // Add sha2 imports
 use hex; // To convert hash bytes to hex string for comparison/logging
 
-const SENDER_MAC_ADDRESS: [u8; 6] = [0x78, 0x21, 0x84, 0x3e, 0xd7, 0xd4]; // MAC address of camera-example
-
+// const SENDER_MAC_ADDRESS: [u8; 6] = [0x78, 0x21, 0x84, 0x3e, 0xd7, 0xd4]; // MAC address of camera-example
+const SENDER_MAC_ADDRESS: [u8; 6] = [0x34, 0xab, 0x95, 0xfa, 0xdc, 0xb8]; // MAC address of camera-example
+// const SENDER_MAC_ADDRESS: [u8; 6] = [0x34, 0xab, 0x95, 0xfa, 0x3a, 0x6c]; // MAC address of camera-example
 // Global state to store the hash received from the sender
 static RECEIVED_HASH: Mutex<RefCell<Option<String>>> = Mutex::new(RefCell::new(None));
 
@@ -255,7 +256,7 @@ fn uart_sender_task(shared_state: Arc<SharedState>, rx_channel: Receiver<Vec<u8>
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    log::set_max_level(log::LevelFilter::Off); // Turn off logging completely to avoid UART interference
+    // log::set_max_level(log::LevelFilter::Off); // Turn off logging completely to avoid UART interference
 
     // info!("initializing peripherals"); // This log will not be shown now
     let peripherals = Peripherals::take().unwrap();
