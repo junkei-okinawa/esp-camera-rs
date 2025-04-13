@@ -883,6 +883,7 @@ dependencies = [
  "esp-idf-sys",
  "log",
  "sha2",
+ "thiserror 2.0.12",
  "toml-cfg",
 ]
 

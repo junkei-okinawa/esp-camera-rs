@@ -1,121 +1,160 @@
-This example is set up for ESP32S3, but you can run it on other ESP32 chips by changing `.cargo/config.toml` and `sdkconfig.defaults` the camera's pins should be changed as well.
+# ESP32 Camera ImageSender
 
-To build and run the example you need to set up all the tools necessary to compile Rust for ESP32. Follow [The Rust on ESP Book](https://docs.esp-rs.org/book/) for setup steps.
+[M5Stack Unit Cam Wi-Fi Camera (OV2640)](https://docs.m5stack.com/en/unit/unit_cam)で撮影した画像をESP-NOWプロトコル経由で送信するソフトウェアです。
 
-When you need to export `WIFI_SSID` and `WIFI_PASS` environment variables and run the example by using `cargo run -r`, it will compile and flash the program to an ESP32S3 with a camera. The pins are set up for this [Freenove board](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board).
+## プロジェクト概要
 
-The program will:
+このプロジェクトは、ESP32マイクロコントローラーとカメラモジュールを使用して構築されており、以下の主要な機能を提供します：
 
-1. Connect to your WiFi.
-1. Initialize the onboard OV2640 camera as well as a LED.
-1. Start HTTP server.
-1. Take a jpeg-encoded picture using the camera for each GET on `/` url and send it.
-1. Print trace information about each step and action.
+- ESP32カメラモジュールによる定期的な画像撮影
+- 撮影した画像のSHA256ハッシュ計算と検証
+- ESP-NOWプロトコルを使用した画像データのチャンク送信
+- 省電力のためのディープスリープ制御
+- LED表示によるステータス通知
 
+## 受信機との連携
 
-note:::
-    [Unit Cam Wi-Fi Camera (OV2640)](https://shop.m5stack.com/products/unit-cam-wi-fi-camera-ov2640?variant=39607138222252)で動作させるためにやったこと
-:::
-1. `.cargo/config.toml`を`esp32`用に修正
-    - .cargo/config.toml
-        ```diff
-        [build]
-        -target = "xtensa-esp32s3-espidf"
-        +target = "xtensa-esp32-espidf"
+このプロジェクトは、同じリポジトリ内の`usb_cdc_receiver`プロジェクトと連携して動作します。送信機（このプロジェクト）が撮影した画像を、受信機（`usb_cdc_receiver`）がESP-NOWプロトコルで受信し、USBシリアル経由でPCに転送します。
 
-        -[target.xtensa-esp32s3-espidf]
-        +[target.xtensa-esp32-espidf]
-        ...
-        [env]
-        -MCU="esp32s3"
-        +MCU="esp32"
-        ```
-2. `sdkconfig.defaults`を`esp32`かつ`PSRAM`ナシ用に修正
-    - sdkconfig.defaults
-        ```diff
-        -CONFIG_ESP32S3_SPIRAM_SUPPORT=y
-        -CONFIG_SPIRAM_MODE_OCT=y
-        -CONFIG_LWIP_LOCAL_HOSTNAME="esp-cam"
-        CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
-        ```
-3. `esp-idf-hal v0.44.1`の`gpio.rs`のPinsの調整
+詳細な受信機の設定と使い方については、[usb_cdc_receiver README](../usb_cdc_receiver/README.md)を参照してください。
 
-    34,35,36,39 pin が`Input`のみで定義されているので`IO`に変更
-    
-    `esp-idf-hal`を Fork し`v0.44.1`タグの該当箇所を修正。`.cargo/config.toml`で patch を適用。
-    - esp-idf-hal v0.44.1 gpio.rs Line 1673 - 1678 
-        ```diff
-        -pin!(Gpio34:34, Input, RTC:4, ADC1:6, NODAC:0, NOTOUCH:0);
-        -pin!(Gpio35:35, Input, RTC:5, ADC1:7, NODAC:0, NOTOUCH:0);
-        -pin!(Gpio36:36, Input, RTC:0, ADC1:0, NODAC:0, NOTOUCH:0);
-        +pin!(Gpio34:34, IO, RTC:4, ADC1:6, NODAC:0, NOTOUCH:0);
-        +pin!(Gpio35:35, IO, RTC:5, ADC1:7, NODAC:0, NOTOUCH:0);
-        +pin!(Gpio36:36, IO, RTC:0, ADC1:0, NODAC:0, NOTOUCH:0);
-        pin!(Gpio37:37, Input, RTC:1, ADC1:1, NODAC:0, NOTOUCH:0);
-        pin!(Gpio38:38, Input, RTC:2, ADC1:2, NODAC:0, NOTOUCH:0);
-        -pin!(Gpio39:39, Input, RTC:3, ADC1:3, NODAC:0, NOTOUCH:0);
-        +pin!(Gpio39:39, IO, RTC:3, ADC1:3, NODAC:0, NOTOUCH:0);
-        ```
-    - `.cargo/config.toml`
-        ```diff
-        +[patch."https://github.com/esp-rs/esp-idf-hal.git"]
-        +esp-idf-hal = { git = "https://github.com/junkei-okinawa/esp-idf-hal.git", branch = "custom-gpio-for-M5UnitCam" }
-        ```
-4. Pinアサインを変更
-    - `src/main.rs`
-        ```diff
-        let camera_params = esp_camera_rs::CameraParams::new()
-        -.set_clock_pin(peripherals.pins.gpio15)
-        -.set_d0_pin(peripherals.pins.gpio11)
-        -.set_d1_pin(peripherals.pins.gpio9)
-        -.set_d2_pin(peripherals.pins.gpio8)
-        -.set_d3_pin(peripherals.pins.gpio10)
-        -.set_d4_pin(peripherals.pins.gpio12)
-        -.set_d5_pin(peripherals.pins.gpio18)
-        -.set_d6_pin(peripherals.pins.gpio17)
-        -.set_d7_pin(peripherals.pins.gpio16)
-        -.set_vertical_sync_pin(peripherals.pins.gpio6)
-        -.set_horizontal_reference_pin(peripherals.pins.gpio7)
-        -.set_pixel_clock_pin(peripherals.pins.gpio13)
-        -.set_sda_pin(peripherals.pins.gpio4)
-        -.set_scl_pin(peripherals.pins.gpio5);
-        +.set_clock_pin(peripherals.pins.gpio27)
-        +.set_d0_pin(peripherals.pins.gpio32)
-        +.set_d1_pin(peripherals.pins.gpio35)
-        +.set_d2_pin(peripherals.pins.gpio34)
-        +.set_d3_pin(peripherals.pins.gpio5)
-        +.set_d4_pin(peripherals.pins.gpio39)
-        +.set_d5_pin(peripherals.pins.gpio18)
-        +.set_d6_pin(peripherals.pins.gpio36)
-        +.set_d7_pin(peripherals.pins.gpio19)
-        +.set_vertical_sync_pin(peripherals.pins.gpio22)
-        +.set_horizontal_reference_pin(peripherals.pins.gpio26)
-        +.set_pixel_clock_pin(peripherals.pins.gpio21)
-        +.set_sda_pin(peripherals.pins.gpio25)
-        +.set_scl_pin(peripherals.pins.gpio23);
-        ```
+## アーキテクチャ
 
-5. bufferの保持にメモリが不足するため`frame_size`を下げる。`fb_location`を`DRAM`に変更し`PSRAM`ナシにする。
-    - `src/main.rs`
+プロジェクトは以下のモジュールで構成されています：
 
-        `UXGA:1600×1200`だと`frame_size`が大きすぎて落ちる。
-        `SVGA:800×600`であれば実行可能。
-        ```diff
-        let camera_params = esp_camera_rs::CameraParams::new()
-            .set_clock_pin(peripherals.pins.gpio27)
-            .set_d0_pin(peripherals.pins.gpio32)
-            .set_d1_pin(peripherals.pins.gpio35)
-            .set_d2_pin(peripherals.pins.gpio34)
-            .set_d3_pin(peripherals.pins.gpio5)
-            .set_d4_pin(peripherals.pins.gpio39)
-            .set_d5_pin(peripherals.pins.gpio18)
-            .set_d6_pin(peripherals.pins.gpio36)
-            .set_d7_pin(peripherals.pins.gpio19)
-            .set_vertical_sync_pin(peripherals.pins.gpio22)
-            .set_horizontal_reference_pin(peripherals.pins.gpio26)
-            .set_pixel_clock_pin(peripherals.pins.gpio21)
-            .set_sda_pin(peripherals.pins.gpio25)
-            .set_scl_pin(peripherals.pins.gpio23)
-        +    .set_frame_size(esp_idf_svc::sys::camera::framesize_t_FRAMESIZE_SVGA)
-        +    .set_fb_location(esp_idf_svc::sys::camera::camera_fb_location_t_CAMERA_FB_IN_DRAM);
-        ```
+### モジュール構成
+
+- **camera**: カメラ初期化と画像キャプチャ処理
+- **config**: 設定ファイルからの構成読み込み
+- **esp_now**: ESP-NOWプロトコル通信と画像フレーム処理
+- **led**: ステータス表示用LEDの制御
+- **mac_address**: MACアドレス処理
+- **sleep**: ディープスリープ制御
+
+### データフロー
+
+1. ESP32カメラで画像を撮影
+2. 撮影した画像のSHA256ハッシュを計算
+3. 画像データをチャンクに分割
+4. ESP-NOWプロトコルを使用して受信機に送信
+   - 最初にハッシュ情報を送信
+   - 次に画像データをチャンクに分けて送信
+   - 最後にEOFマーカーを送信
+5. 送信完了後、ディープスリープに移行
+6. 一定時間後に再び起動して次の撮影サイクルを開始
+
+## 使用方法
+
+### 必要条件
+
+- Rust（1.71以上）
+- ESP-IDF（v5.1以上）
+- ESP32 + カメラモジュール (本プロジェクトでは`Unit Cam Wi-Fi Camera (OV2640)`を使用)
+- cargo tools：`cargo-espflash`
+
+### セットアップと構成
+
+1. リポジトリをクローン：
+   ```bash
+   git clone https://github.com/junkei-okinawa/esp-camera-rs.git
+   cd esp-camera-rs/examples/image_sender
+   ```
+
+2. 設定ファイルのセットアップ：
+   ```bash
+   cp cfg.toml.template cfg.toml
+   ```
+
+3. `cfg.toml`を編集して、受信機のMACアドレスを設定：
+   ```toml
+   [image-sender]
+   receiver_mac = "1A:2B:3C:4D:5E:6F"  # 受信機のMACアドレスに変更
+   ```
+
+### 異なるカメラモジュールへの対応
+
+異なるESP32ボードやカメラモジュールを使用する場合は、以下の設定が必要になります：
+
+1. `.cargo/config.toml`の修正：ESP32のターゲットに合わせて変更
+2. `sdkconfig.defaults`の変更：PSRAMの設定などを調整
+3. カメラのピン設定：`src/camera/controller.rs`のピン設定を変更
+
+### ビルドと書き込み
+
+プロジェクトをビルドして、ESP32デバイスにフラッシュするには：
+
+```bash
+cargo espflash flash --release --port /dev/your-port --monitor
+```
+
+## テスト
+
+### 単体テスト実行
+
+コードの単体テストを実行するには：
+
+```bash
+cargo test --lib
+```
+
+PCの開発環境でテストを実行する場合は問題ありませんが、ESP32実機上でテストを実行する際には注意が必要です：
+
+```bash
+cargo test --lib --target xtensa-esp32-espidf
+```
+
+※注：一部のテストはESP32実機環境では実行できないため、`#[ignore]`属性でマークされています。
+
+テストカバレッジ：
+
+- mac_address: MACアドレス処理のテスト
+- esp_now/frame: ハッシュ計算やメッセージ準備のテスト
+- camera: カメラ制御のテスト（ハードウェア依存）
+- led: LEDパターン制御のテスト（ハードウェア依存）
+
+## モジュール解説
+
+### camera
+
+カメラの初期化、設定、画像撮影を担当します。M5Stack Unit Camなどの異なるカメラモジュールに対応できるよう、柔軟なピン設定が可能です。
+
+### config
+
+設定ファイル（cfg.toml）から受信機のMACアドレスなどの構成情報を読み込みます。
+
+### esp_now
+
+ESP-NOWプロトコルを使用した通信処理を担当します。主な機能として：
+- 送信機の初期化とピア登録
+- 画像データのチャンク分割送信
+- ハッシュ計算と検証
+
+### led
+
+ステータスLEDの制御を行います。撮影中、送信中、エラー状態などを異なるLEDパターンで表示します。
+
+### mac_address
+
+MACアドレスの解析、検証、文字列変換などの機能を提供します。
+
+### sleep
+
+ディープスリープの制御と電力管理を担当します。撮影・送信サイクルの間の省電力化に貢献します。
+
+## トラブルシューティング
+
+### カメラが認識されない場合
+
+- カメラのピン設定を確認してください。本ソフトウェアは**[Unit Cam Wi-Fi Camera (OV2640)](https://docs.m5stack.com/en/unit/unit_cam)**で動作するように設定されています。
+- 電源供給が十分か確認してください
+
+### 画像送信が失敗する場合
+
+- 受信機が起動しているか確認してください
+- MACアドレスが正しく設定されているか確認してください
+- 送信機と受信機の距離が遠すぎないか確認してください
+
+### ディープスリープが正常に動作しない場合
+
+- ボードがディープスリープに対応しているか確認してください
+- 電源供給方法によっては完全なディープスリープができない場合があります

@@ -1,10 +1,18 @@
 [package]
 name = "usb_cdc_receiver"
-version = "0.1.0"
-authors = ["junkei <example@example.com>"]
+version = "0.2.0"
+authors = ["junkei-okinawa"]
 edition = "2021"
 resolver = "2"
-rust-version = "1.71"
+rust-version = "1.85"
+
+[[bin]]
+name = "usb_cdc_receiver"
+path = "src/main.rs"
+
+[lib]
+name = "usb_cdc_receiver"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = "s"
@@ -18,24 +26,16 @@ log = { version = "0.4", default-features = false }
 anyhow = "1.0"
 esp-idf-svc = { version = "0.51", default-features = false, features = ["binstart", "std", "experimental", "alloc"] } # Removed wifi feature
 embedded-svc = "0.28"
-sha2 = "0.10" # Add sha2 for hashing
-hex = "0.4" # Add hex for hash string conversion
-esp-idf-hal = { version = "0.45" } # Added for potential hardware access
-heapless = "=0.8.0" # Added for fixed-size data structures
-esp-idf-sys = { version = "0.36.1", features = ["binstart"] } # Added for sys functions like tick count
+sha2 = "0.10"
+hex = "0.4"
+esp-idf-hal = { version = "0.45" }
+heapless = "=0.8.0"
+esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
 toml-cfg = "=0.2"
-
-[lib]
-name = "usb_cdc_receiver"
-path = "src/lib.rs"
-
-[[bin]]
-name = "usb_cdc_receiver"
-path = "src/main.rs"
 
 [build-dependencies]
 embuild = "0.33"
-toml-cfg = "=0.2" # Added back for reading camera MAC addresses from cfg.toml
+toml-cfg = "=0.2"
 
 [package.metadata.espflash]
 partition_table = "../partitions.csv"
