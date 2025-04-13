@@ -23,10 +23,11 @@ hex = "0.4" # Add hex for hash string conversion
 esp-idf-hal = { version = "0.45" } # Added for potential hardware access
 heapless = "=0.8.0" # Added for fixed-size data structures
 esp-idf-sys = { version = "0.36.1", features = ["binstart"] } # Added for sys functions like tick count
+toml-cfg = "=0.2"
 
 [build-dependencies]
 embuild = "0.33"
-# toml-cfg = "0.1" # Removed as cfg.toml is no longer used for SSID/PSK
+toml-cfg = "=0.2" # Added back for reading camera MAC addresses from cfg.toml
 
 [package.metadata.espflash]
 partition_table = "../partitions.csv"

@@ -20,6 +20,53 @@ use anyhow::Result;
 use std::slice;
 use std::sync::Mutex; // Use anyhow::Result
 
+/// この設定はcompile時にbuild.rsによってcfg.tomlから読み込まれる
+#[toml_cfg::toml_config]
+pub struct Config {
+    #[default("")]
+    image_raciver_cam1: &'static str,
+    #[default("")]
+    image_raciver_cam2: &'static str,
+    #[default("")]
+    image_raciver_cam3: &'static str,
+    #[default("")]
+    image_raciver_cam4: &'static str,
+}
+
+// 受信機のMAC アドレスを表す構造体
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MacAddress([u8; 6]);
+
+impl MacAddress {
+    fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        debug!("Parsing MAC address from string: {}", s);
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 6 {
+            return Err(format!(
+                "Invalid MAC address format: '{}'. Expected 6 parts separated by colons.",
+                s
+            )
+            .into());
+        }
+        let mut mac = [0u8; 6];
+        for (i, part) in parts.iter().enumerate() {
+            mac[i] = u8::from_str_radix(part, 16)
+                .map_err(|e| format!("Invalid hex value in MAC address: {}", e))?;
+        }
+        Ok(MacAddress(mac))
+    }
+}
+
+impl std::fmt::Display for MacAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
+    }
+}
+
 // --- Configuration Constants ---
 // const IMAGE_QUEUE_SIZE: usize = 20; // Increased queue size
 const IMAGE_QUEUE_SIZE: usize = 512; // Increased queue size for larger data chunks
@@ -326,63 +373,61 @@ fn main() -> Result<()> {
             error!("ESP-NOW: Failed to get peer count");
         }
 
-        // カメラのMACアドレスをESP-NOWピアとして登録
-        let cameras = [
-            // cfg.tomlから取得したカメラのMACアドレス
-            "34:ab:95:fa:3a:6c", // cam1
-            "34:ab:95:fb:3f:c4", // cam2
-            "78:21:84:3e:d7:d4", // cam3 - この送信に失敗しているカメラ
-            "34:ab:95:fb:d0:6c", // cam4
-        ];
+        // カメラのMACアドレスをcfg.tomlから読み込む
+        let app_config = CONFIG;
 
-        for cam_mac_str in cameras.iter() {
-            // MACアドレスをパースする
-            let parts: Vec<&str> = cam_mac_str.split(':').collect();
-            if parts.len() == 6 {
-                let mut mac = [0u8; 6];
-                let mut parse_success = true;
+        // カメラMACアドレスを格納する配列
+        let mut cameras = Vec::new();
 
-                for (i, part) in parts.iter().enumerate() {
-                    match u8::from_str_radix(part, 16) {
-                        Ok(val) => mac[i] = val,
-                        Err(_) => {
-                            parse_success = false;
-                            error!("ESP-NOW: Failed to parse MAC address part: {}", part);
-                            break;
+        // 各カメラのMACアドレスを確認し、有効なものを登録
+        if !app_config.image_raciver_cam1.is_empty() {
+            cameras.push(("cam1", app_config.image_raciver_cam1));
+        }
+
+        if !app_config.image_raciver_cam2.is_empty() {
+            cameras.push(("cam2", app_config.image_raciver_cam2));
+        }
+
+        if !app_config.image_raciver_cam3.is_empty() {
+            cameras.push(("cam3", app_config.image_raciver_cam3));
+        }
+
+        if !app_config.image_raciver_cam4.is_empty() {
+            cameras.push(("cam4", app_config.image_raciver_cam4));
+        }
+
+        if cameras.is_empty() {
+            warn!("No camera MAC addresses configured in cfg.toml.");
+        } else {
+            info!("Found {} camera MAC addresses in cfg.toml", cameras.len());
+
+            // カメラのMACアドレスをESP-NOWピアとして登録
+            for (cam_name, cam_mac_str) in cameras {
+                // MACアドレスをパースする
+                match MacAddress::from_str(cam_mac_str) {
+                    Ok(mac_addr) => {
+                        info!("Registering camera {} with MAC: {}", cam_name, mac_addr);
+
+                        let mut peer_info = esp_idf_svc::sys::esp_now_peer_info_t::default();
+                        peer_info.channel = 0; // Use current channel
+                        peer_info.ifidx = esp_idf_svc::sys::wifi_interface_t_WIFI_IF_STA; // Use STA interface for receiving
+                        peer_info.encrypt = false; // No encryption
+                        peer_info.peer_addr = mac_addr.0;
+
+                        let add_result = esp_idf_svc::sys::esp_now_add_peer(&peer_info);
+                        if add_result == 0 {
+                            info!("ESP-NOW: Added camera {} as peer: {}", cam_name, mac_addr);
+                        } else {
+                            error!(
+                                "ESP-NOW: Failed to add camera {} as peer: {}",
+                                cam_name, add_result
+                            );
                         }
                     }
-                }
-
-                if parse_success {
-                    let mut peer_info = esp_idf_svc::sys::esp_now_peer_info_t::default();
-                    peer_info.channel = 0; // Use current channel
-                    peer_info.ifidx = esp_idf_svc::sys::wifi_interface_t_WIFI_IF_STA; // Use STA interface for receiving
-                    peer_info.encrypt = false; // No encryption
-                    peer_info.peer_addr = mac;
-
-                    let add_result = esp_idf_svc::sys::esp_now_add_peer(&peer_info);
-                    if add_result == 0 {
-                        let mac_str = mac
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &b)| {
-                                if i < 5 {
-                                    format!("{:02x}:", b)
-                                } else {
-                                    format!("{:02x}", b)
-                                }
-                            })
-                            .collect::<String>();
-                        info!("ESP-NOW: Added camera as peer: {}", mac_str);
-                    } else {
-                        error!(
-                            "ESP-NOW: Failed to add camera {} as peer: {}",
-                            cam_mac_str, add_result
-                        );
+                    Err(e) => {
+                        error!("Failed to parse MAC address for camera {}: {}", cam_name, e);
                     }
                 }
-            } else {
-                error!("ESP-NOW: Invalid MAC address format: {}", cam_mac_str);
             }
         }
 
@@ -397,6 +442,7 @@ fn main() -> Result<()> {
             error!("ESP-NOW: Failed to set PMK: {}", pmk_result);
         }
     }
+
     info!("ESP-NOW Initialized and receive callback registered with expanded peer capacity."); // --- USB CDC Initialization ---
     info!("Initializing USB CDC...");
     let mut config = UsbSerialConfig::new();
