@@ -1,7 +1,7 @@
 [package]
-name = "image-receiver" # パッケージ名を変更
-version = "0.1.0"
-authors = ["Roo <roo@example.com>"] # 作者情報を変更
+name = "image_receiver"
+version = "0.2.0"
+authors = ["junkei <example@example.com>"]
 edition = "2021"
 resolver = "2"
 rust-version = "1.71"
@@ -10,18 +10,24 @@ rust-version = "1.71"
 opt-level = "s"
 
 [profile.dev]
-debug = true    # Symbols are nice and they don't increase the size on Flash
+debug = true
 opt-level = "z"
 
 [dependencies]
-log = { version = "0.4", default-features = false }
-anyhow = "1.0"
-# esp-idf-svc のみに依存し、他は推移的に依存させる
-# esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git", tag = "v0.51.0", default-features = false, features = ["binstart", "std"] } # 最新バージョンに戻す
-esp-idf-svc = { version = "0.51.0", default-features = false, features = ["binstart", "std"] }
-embedded-svc = "0.28"
-sha2 = "0.10" # Add sha2 for hashing
-hex = "0.4" # Add hex for hash string conversion
+esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
+esp-idf-hal = { version = "0.45" }
+esp-idf-svc = { version = "0.51", features = ["experimental", "alloc", "wifi"] }
+embedded-svc = "0.28.1"
+log = "0.4"
+anyhow = "1"
+heapless = "=0.8.0"
+sha2 = "0.10"
+esp-mqtt = "1.1"
+embedded-time = "0.12"
+embedded-hal = "1.0.0"
 
 [build-dependencies]
-embuild = { version = "0.33", features = ["espidf"] } # espidf feature を追加
+embuild = { version = "0.33", features = ["espidf"] }
+
+[package.metadata.espflash]
+partition_table = "../partitions.csv"

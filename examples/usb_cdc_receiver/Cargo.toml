@@ -1,0 +1,32 @@
+[package]
+name = "usb_cdc_receiver"
+version = "0.1.0"
+authors = ["junkei <example@example.com>"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.71"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true    # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+anyhow = "1.0"
+esp-idf-svc = { version = "0.51", default-features = false, features = ["binstart", "std", "experimental", "alloc"] } # Removed wifi feature
+embedded-svc = "0.28"
+sha2 = "0.10" # Add sha2 for hashing
+hex = "0.4" # Add hex for hash string conversion
+esp-idf-hal = { version = "0.45" } # Added for potential hardware access
+heapless = "=0.8.0" # Added for fixed-size data structures
+esp-idf-sys = { version = "0.36.1", features = ["binstart"] } # Added for sys functions like tick count
+
+[build-dependencies]
+embuild = "0.33"
+# toml-cfg = "0.1" # Removed as cfg.toml is no longer used for SSID/PSK
+
+[package.metadata.espflash]
+partition_table = "../partitions.csv"

@@ -1,0 +1,4 @@
+.embuild/
+target/
+components_esp32.lock
+cfg.toml
