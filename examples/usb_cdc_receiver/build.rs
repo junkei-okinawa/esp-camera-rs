@@ -1,17 +1,17 @@
 #[toml_cfg::toml_config]
 pub struct Config {
     #[default("")]
-    image_raciver_cam1: &'static str,
+    image_sender_cam1: &'static str,
     #[default("")]
-    image_raciver_cam2: &'static str,
+    image_sender_cam2: &'static str,
     #[default("")]
-    image_raciver_cam3: &'static str,
+    image_sender_cam3: &'static str,
     #[default("")]
-    image_raciver_cam4: &'static str,
+    image_sender_cam4: &'static str,
     #[default("")]
-    image_raciver_cam5: &'static str,
+    image_sender_cam5: &'static str,
     #[default("")]
-    image_raciver_cam6: &'static str,
+    image_sender_cam6: &'static str,
 }
 
 fn main() {
@@ -26,33 +26,33 @@ fn main() {
     // 設定済みのカメラアドレスを確認
     let mut found_cameras = 0;
 
-    if !app_config.image_raciver_cam1.is_empty() {
-        println!("Camera 1: {}", app_config.image_raciver_cam1);
+    if !app_config.image_sender_cam1.is_empty() {
+        println!("Camera 1: {}", app_config.image_sender_cam1);
         found_cameras += 1;
     }
 
-    if !app_config.image_raciver_cam2.is_empty() {
-        println!("Camera 2: {}", app_config.image_raciver_cam2);
+    if !app_config.image_sender_cam2.is_empty() {
+        println!("Camera 2: {}", app_config.image_sender_cam2);
         found_cameras += 1;
     }
 
-    if !app_config.image_raciver_cam3.is_empty() {
-        println!("Camera 3: {}", app_config.image_raciver_cam3);
+    if !app_config.image_sender_cam3.is_empty() {
+        println!("Camera 3: {}", app_config.image_sender_cam3);
         found_cameras += 1;
     }
 
-    if !app_config.image_raciver_cam4.is_empty() {
-        println!("Camera 4: {}", app_config.image_raciver_cam4);
+    if !app_config.image_sender_cam4.is_empty() {
+        println!("Camera 4: {}", app_config.image_sender_cam4);
         found_cameras += 1;
     }
 
-    if !app_config.image_raciver_cam5.is_empty() {
-        println!("Camera 5: {}", app_config.image_raciver_cam5);
+    if !app_config.image_sender_cam5.is_empty() {
+        println!("Camera 5: {}", app_config.image_sender_cam5);
         found_cameras += 1;
     }
 
-    if !app_config.image_raciver_cam6.is_empty() {
-        println!("Camera 6: {}", app_config.image_raciver_cam6);
+    if !app_config.image_sender_cam6.is_empty() {
+        println!("Camera 6: {}", app_config.image_sender_cam6);
         found_cameras += 1;
     }
 

@@ -25,6 +25,14 @@ heapless = "=0.8.0" # Added for fixed-size data structures
 esp-idf-sys = { version = "0.36.1", features = ["binstart"] } # Added for sys functions like tick count
 toml-cfg = "=0.2"
 
+[lib]
+name = "usb_cdc_receiver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "usb_cdc_receiver"
+path = "src/main.rs"
+
 [build-dependencies]
 embuild = "0.33"
 toml-cfg = "=0.2" # Added back for reading camera MAC addresses from cfg.toml
