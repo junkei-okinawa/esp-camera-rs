@@ -5,7 +5,7 @@ use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use esp_idf_sys::{
     esp_deep_sleep, esp_now_add_peer, esp_now_init, esp_now_peer_info_t, esp_now_register_send_cb,
     esp_now_send, esp_now_send_status_t, esp_now_send_status_t_ESP_NOW_SEND_SUCCESS,
-    wifi_interface_t_WIFI_IF_AP,
+    wifi_interface_t_WIFI_IF_AP, wifi_interface_t_WIFI_IF_STA,
 };
 use log::{error, info};
 use sha2::{Digest, Sha256}; // Add sha2 imports
@@ -134,8 +134,8 @@ fn main() -> anyhow::Result<()> {
 
         let mut peer_info = esp_now_peer_info_t::default();
         peer_info.channel = 0; // Use current channel (like image_reciver branch)
-                               // peer_info.ifidx = wifi_interface_t_WIFI_IF_STA;
-        peer_info.ifidx = wifi_interface_t_WIFI_IF_AP; // Use AP interface for ESP-NOW
+        peer_info.ifidx = wifi_interface_t_WIFI_IF_STA; // Changed to STA to match receiver
+                                                        // peer_info.ifidx = wifi_interface_t_WIFI_IF_AP; // Previous setting causing the problem
         peer_info.encrypt = false;
         peer_info.peer_addr = receiver_mac.0;
         esp_now_add_peer(&peer_info);

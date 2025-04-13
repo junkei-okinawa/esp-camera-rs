@@ -78,50 +78,134 @@ extern "C" fn esp_now_recv_cb(info: *const esp_now_recv_info_t, data: *const u8,
     // Handle potential EOF marker (specific pattern) or regular data
     let data_slice = unsafe { slice::from_raw_parts(data, data_len as usize) };
     let is_eof = data_len == 4 && data_slice == b"EOF!"; // Check for specific EOF payload
+    let is_hash = data_len > 5 && data_slice.starts_with(b"HASH:"); // Check for HASH payload
 
+    // デバッグレベルでサマリーログを出力（重要な情報のみ）
     if is_eof {
         warn!(
             "ESP-NOW CB [{}]: Received EOF marker (b\"EOF!\").",
             mac_str_log
         );
+    } else if is_hash {
+        warn!("ESP-NOW CB [{}]: Received HASH marker.", mac_str_log);
     }
 
-    // Frame each received ESP-NOW packet individually before enqueuing
-    let start_marker: [u8; 2] = 0xAAAAu16.to_be_bytes();
-    let end_marker: [u8; 2] = 0xBBBBu16.to_be_bytes();
-    // Use actual received data_len for the length field in the frame
+    // ----- 強化されたフレーム形式 -----
+    // 改良：カメラを区別するためのメタデータをさらに強化
+
+    // より明確に識別できるスタートマーカー (4バイト)
+    let start_marker: [u8; 4] = 0xFACE_AABBu32.to_be_bytes();
+
+    // より明確に識別できるエンドマーカー (4バイト)
+    let end_marker: [u8; 4] = 0xCDEF_5678u32.to_be_bytes();
+
+    // 各カメラのデータ送信シーケンス番号（EOFとHASHでリセット）
+    // 静的なカウンター（MACアドレスごとに管理）
+    static SEQUENCE_COUNTERS: Mutex<Option<std::collections::HashMap<[u8; 6], u32>>> =
+        Mutex::new(None);
+
+    // 初めて使用される場合はHashMapを初期化
+    if SEQUENCE_COUNTERS.lock().unwrap().is_none() {
+        *SEQUENCE_COUNTERS.lock().unwrap() = Some(std::collections::HashMap::new());
+    }
+
+    // シーケンスカウンターを取得または初期化
+    let mut seq_num = 0;
+    {
+        let mut counters = SEQUENCE_COUNTERS.lock().unwrap();
+        if let Some(ref mut counter_map) = *counters {
+            // HASHまたはEOFマーカーを受け取った場合、シーケンス番号をリセット
+            if is_hash || is_eof {
+                counter_map.insert(mac_array, 0);
+                seq_num = 0;
+            } else {
+                // 既存のカウンターを取得するか、新しいカウンターを作成
+                let counter = counter_map.entry(mac_array).or_insert(0);
+                *counter = counter.wrapping_add(1); // オーバーフロー対策
+                seq_num = *counter;
+            }
+        }
+    }
+
+    // データ長情報 (4バイト)
     let data_len_bytes = (data_len as u32).to_be_bytes();
 
-    let total_frame_len = start_marker.len()
-        + mac_array.len()
-        + data_len_bytes.len()
-        + data_slice.len() // Use actual data slice length here
-        + end_marker.len();
+    // フレームタイプ（1バイト）: 1=HASH, 2=DATA, 3=EOF
+    let frame_type: u8 = if is_hash {
+        1
+    } else if is_eof {
+        3
+    } else {
+        2
+    };
+
+    // シーケンス番号 (4バイト)
+    let seq_bytes = seq_num.to_be_bytes();
+
+    // チェックサム（単純な実装として、データの最初の4バイトとXORする）
+    let mut checksum: u32 = 0;
+    for chunk in data_slice.chunks(4) {
+        let mut val: u32 = 0;
+        for (i, &b) in chunk.iter().enumerate() {
+            val |= (b as u32) << (i * 8);
+        }
+        checksum ^= val;
+    }
+    let checksum_bytes = checksum.to_be_bytes();
+
+    // ログでMACアドレスを確認するためのヘルパー関数
+    let mac_hex_str = format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac_array[0], mac_array[1], mac_array[2], mac_array[3], mac_array[4], mac_array[5]
+    );
+    debug!("MAC address for framing: {}", mac_hex_str);
+
+    // フレームの合計長を計算
+    let total_frame_len = start_marker.len() +   // 開始マーカー: 4バイト
+        mac_array.len() +      // MACアドレス: 6バイト
+        1 +                    // フレームタイプ: 1バイト
+        seq_bytes.len() +      // シーケンス番号: 4バイト
+        data_len_bytes.len() + // データ長: 4バイト
+        data_slice.len() +     // 実データ: 可変長
+        checksum_bytes.len() + // チェックサム: 4バイト
+        end_marker.len(); // 終了マーカー: 4バイト
+
     let mut framed_data = Vec::with_capacity(total_frame_len);
 
-    framed_data.extend_from_slice(&start_marker);
-    framed_data.extend_from_slice(&mac_array);
-    framed_data.extend_from_slice(&data_len_bytes); // Send original data_len
-    framed_data.extend_from_slice(data_slice);
-    framed_data.extend_from_slice(&end_marker);
+    // フレームを構築
+    framed_data.extend_from_slice(&start_marker); // 開始マーカー
 
-    // Enqueue the already framed data chunk
-    // Log received chunk info (including EOF marker)
-    info!(
-        "ESP-NOW CB [{}]: Received chunk ({} bytes data, EOF={}). Enqueuing framed data ({} bytes total).",
+    // MACアドレスのコピー - バイト配列をそのまま使用
+    framed_data.extend_from_slice(&mac_array); // MACアドレス
+
+    framed_data.push(frame_type); // フレームタイプ
+    framed_data.extend_from_slice(&seq_bytes); // シーケンス番号
+    framed_data.extend_from_slice(&data_len_bytes); // データ長
+    framed_data.extend_from_slice(data_slice); // データ本体
+    framed_data.extend_from_slice(&checksum_bytes); // チェックサム
+    framed_data.extend_from_slice(&end_marker); // 終了マーカー
+
+    // データ量が多いのでログレベルをdebugに下げる
+    debug!(
+        "ESP-NOW CB [{}]: Received chunk ({} bytes, type={}, seq={}). Framed: {} bytes.",
         mac_str_log,
         data_len,
-        is_eof,
+        if is_hash {
+            "HASH"
+        } else if is_eof {
+            "EOF"
+        } else {
+            "DATA"
+        },
+        seq_num,
         framed_data.len()
     );
 
-    // Use a different struct or just Vec<u8> for the queue if only sending framed data
     // For simplicity, let's reuse ReceivedData but 'data' now holds the *framed* chunk
     let framed_chunk_to_send = ReceivedData {
         mac: mac_array, // Keep MAC for potential logging in main loop if needed
         data: framed_data,
     };
-    // Removed extra closing brace and semicolon from previous diff attempt
 
     // Lock the producer end of the queue
     if let Ok(mut producer_guard) = RECEIVED_DATA_PRODUCER.lock() {
@@ -129,12 +213,31 @@ extern "C" fn esp_now_recv_cb(info: *const esp_now_recv_info_t, data: *const u8,
             match producer.enqueue(framed_chunk_to_send) {
                 // Enqueue the framed chunk
                 Ok(_) => {
-                    // info!("ESP-NOW CB [{}]: Framed chunk successfully enqueued.", mac_str_log)
+                    // Successful enqueue - no need for verbose logging here
                 }
-                Err(_) => warn!(
-                    "ESP-NOW CB [{}]: Data queue full! Dropping framed chunk.",
-                    mac_str_log
-                ),
+                Err(_) => {
+                    // キューがいっぱいの場合の処理を改善
+                    warn!(
+                        "ESP-NOW CB [{}]: Data queue full! Dropping {} frame (seq={}).",
+                        mac_str_log,
+                        if is_hash {
+                            "HASH"
+                        } else if is_eof {
+                            "EOF"
+                        } else {
+                            "DATA"
+                        },
+                        seq_num
+                    );
+
+                    // EOFフレームが落とされたことをエラーログに記録（重要なため）
+                    if is_eof {
+                        error!(
+                            "ESP-NOW CB [{}]: CRITICAL! EOF frame dropped due to queue full!",
+                            mac_str_log
+                        );
+                    }
+                }
             }
         } else {
             error!(
@@ -206,14 +309,102 @@ fn main() -> Result<()> {
         // Ensure ESP-NOW is initialized *after* Wi-Fi is started
         esp_now_init();
         esp_now_register_recv_cb(Some(esp_now_recv_cb));
+
+        // ESP-NOWの最大ピア数を確認するためにログ出力
+        let mut esp_now_peer_num = esp_idf_svc::sys::esp_now_peer_num_t {
+            total_num: 0,
+            encrypt_num: 0,
+        };
+        // 正しいポインタ型（i32）を使用
+        if esp_idf_svc::sys::esp_now_get_peer_num(&mut esp_now_peer_num) == 0 {
+            info!(
+                "ESP-NOW: Current peer count: {}",
+                esp_now_peer_num.total_num
+            );
+            info!("ESP-NOW: Maximum supported peers: 20"); // ESP-IDF 4.xでは20ピアをサポート
+        } else {
+            error!("ESP-NOW: Failed to get peer count");
+        }
+
+        // カメラのMACアドレスをESP-NOWピアとして登録
+        let cameras = [
+            // cfg.tomlから取得したカメラのMACアドレス
+            "34:ab:95:fa:3a:6c", // cam1
+            "34:ab:95:fb:3f:c4", // cam2
+            "78:21:84:3e:d7:d4", // cam3 - この送信に失敗しているカメラ
+            "34:ab:95:fb:d0:6c", // cam4
+        ];
+
+        for cam_mac_str in cameras.iter() {
+            // MACアドレスをパースする
+            let parts: Vec<&str> = cam_mac_str.split(':').collect();
+            if parts.len() == 6 {
+                let mut mac = [0u8; 6];
+                let mut parse_success = true;
+
+                for (i, part) in parts.iter().enumerate() {
+                    match u8::from_str_radix(part, 16) {
+                        Ok(val) => mac[i] = val,
+                        Err(_) => {
+                            parse_success = false;
+                            error!("ESP-NOW: Failed to parse MAC address part: {}", part);
+                            break;
+                        }
+                    }
+                }
+
+                if parse_success {
+                    let mut peer_info = esp_idf_svc::sys::esp_now_peer_info_t::default();
+                    peer_info.channel = 0; // Use current channel
+                    peer_info.ifidx = esp_idf_svc::sys::wifi_interface_t_WIFI_IF_STA; // Use STA interface for receiving
+                    peer_info.encrypt = false; // No encryption
+                    peer_info.peer_addr = mac;
+
+                    let add_result = esp_idf_svc::sys::esp_now_add_peer(&peer_info);
+                    if add_result == 0 {
+                        let mac_str = mac
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &b)| {
+                                if i < 5 {
+                                    format!("{:02x}:", b)
+                                } else {
+                                    format!("{:02x}", b)
+                                }
+                            })
+                            .collect::<String>();
+                        info!("ESP-NOW: Added camera as peer: {}", mac_str);
+                    } else {
+                        error!(
+                            "ESP-NOW: Failed to add camera {} as peer: {}",
+                            cam_mac_str, add_result
+                        );
+                    }
+                }
+            } else {
+                error!("ESP-NOW: Invalid MAC address format: {}", cam_mac_str);
+            }
+        }
+
+        // ESP-NOW添付ファイル(PMK)の最大数を拡大（デフォルトは6）
+        let pmk: [u8; 16] = [
+            0x50, 0x4d, 0x4b, 0x5f, 0x4b, 0x45, 0x59, 0x5f, 0x42, 0x59, 0x5f, 0x43, 0x55, 0x53,
+            0x54, 0x4f,
+        ];
+        let pmk_result = esp_idf_svc::sys::esp_now_set_pmk(pmk.as_ptr());
+
+        if pmk_result != 0 {
+            error!("ESP-NOW: Failed to set PMK: {}", pmk_result);
+        }
     }
-    info!("ESP-NOW Initialized and receive callback registered."); // --- USB CDC Initialization ---
+    info!("ESP-NOW Initialized and receive callback registered with expanded peer capacity."); // --- USB CDC Initialization ---
     info!("Initializing USB CDC...");
     let mut config = UsbSerialConfig::new();
     // USB CDCではバッファサイズの設定が重要（ボーレートではなく）
     // 送受信バッファサイズを増加させてスループットを改善
-    config.tx_buffer_size = 2048; // 送信バッファを2048バイトに設定
-    config.rx_buffer_size = 2048; // 受信バッファを2048バイトに設定
+    // より多くのカメラからのデータを同時に処理するために大きなバッファを使用
+    config.tx_buffer_size = 4096; // 送信バッファを4096バイトに拡大
+    config.rx_buffer_size = 4096; // 受信バッファを4096バイトに拡大
 
     let mut usb_serial_driver = UsbSerialDriver::new(
         peripherals.usb_serial,

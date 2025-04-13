@@ -18,12 +18,31 @@ DEFAULT_SERIAL_PORT = "/dev/ttyACM0"
 BAUD_RATE = 115200
 IMAGE_DIR = "images_usb_async"
 MAC_ADDRESS_LENGTH = 6
+FRAME_TYPE_LENGTH = 1
+SEQUENCE_NUM_LENGTH = 4
 LENGTH_FIELD_BYTES = 4
-START_MARKER = b"\xaa\xaa"
-END_MARKER = b"\xbb\xbb"
-HEADER_LENGTH = MAC_ADDRESS_LENGTH + LENGTH_FIELD_BYTES
-FOOTER_LENGTH = len(END_MARKER)
-IMAGE_TIMEOUT = 10.0  # Timeout for receiving chunks for one image (seconds)
+CHECKSUM_LENGTH = 4
+
+# 新しい強化されたフレームマーカー（4バイト）
+START_MARKER = b"\xfa\xce\xaa\xbb"
+END_MARKER = b"\xcd\xef\x56\x78"
+
+# フレームタイプ定義
+FRAME_TYPE_HASH = 1
+FRAME_TYPE_DATA = 2
+FRAME_TYPE_EOF = 3
+
+# フレームヘッダー長（開始マーカー + MACアドレス + フレームタイプ + シーケンス + データ長）
+HEADER_LENGTH = len(START_MARKER) + MAC_ADDRESS_LENGTH + FRAME_TYPE_LENGTH + SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES
+
+# フレームフッター長（チェックサム + 終了マーカー）
+FOOTER_LENGTH = CHECKSUM_LENGTH + len(END_MARKER)
+
+# 画像タイムアウト設定（長くして複数カメラの同時送信でも完了できるように）
+IMAGE_TIMEOUT = 20.0  # Timeout for receiving chunks for one image (seconds)
+
+# デバッグフラグ
+DEBUG_FRAME_PARSING = False  # フレーム解析の詳細をログ出力するか
 
 # --- Global State ---
 image_buffers = {}
@@ -104,17 +123,15 @@ class SerialProtocol(asyncio.Protocol):
         self.process_buffer()  # Process the buffer immediately
 
     def process_buffer(self):
-        """Process the buffer to find and handle complete frames."""
+        """Process the buffer to find and handle complete frames with enhanced frame format."""
         global image_buffers, last_receive_time
-        processed_frame = (
-            False  # Flag to indicate if a frame was processed in this call
-        )
+        processed_frame = False  # Flag to indicate if a frame was processed in this call
 
         while True:  # Process all complete frames in the buffer
-            # フレームレベルのタイムアウトチェック
+            # フレームレベルのタイムアウトチェック - 長めの値に設定
             if self.frame_start_time and (
-                time.monotonic() - self.frame_start_time > 1.0
-            ):  # 例: 1秒タイムアウト
+                time.monotonic() - self.frame_start_time > 2.0
+            ):  # 2秒タイムアウト（複数カメラ対応のため延長）
                 logger.warning(
                     f"Frame timeout detected. Discarding partial frame data."
                 )
@@ -133,13 +150,13 @@ class SerialProtocol(asyncio.Protocol):
                     self.buffer.clear()
                 self.frame_start_time = None  # タイムアウト処理後はリセット
 
+            # 開始マーカー（現在は4バイト）を探す
             start_index = self.buffer.find(START_MARKER)
             if start_index == -1:
                 # Keep the last potential start marker bytes if buffer is short
                 if len(self.buffer) >= len(START_MARKER):
                     # 開始マーカーの一部かもしれないので、末尾を残す
                     self.buffer = self.buffer[-(len(START_MARKER) - 1) :]
-                # logger.debug(f"No start marker found. Buffer len: {len(self.buffer)}")
                 break  # Need more data
 
             # 開始マーカーが見つかったら、フレーム受信開始時間を記録
@@ -152,136 +169,150 @@ class SerialProtocol(asyncio.Protocol):
                     f"Discarding {start_index} bytes before start marker: {discarded_data.hex()}"
                 )
                 self.buffer = self.buffer[start_index:]
-                self.frame_start_time = (
-                    time.monotonic()
-                )  # マーカーを見つけたので時間リセット
+                self.frame_start_time = time.monotonic()  # マーカーを見つけたので時間リセット
                 continue  # バッファを更新したのでループの最初から再試行
 
-            if len(self.buffer) < len(START_MARKER) + HEADER_LENGTH:
-                # logger.debug(f"Need more data for header. Buffer len: {len(self.buffer)}")
+            # ヘッダー全体を受信するのに十分なデータがあるか確認
+            # ヘッダー = [START_MARKER(4) + MAC(6) + FRAME_TYPE(1) + SEQUENCE(4) + DATA_LEN(4)]
+            if len(self.buffer) < len(START_MARKER) + MAC_ADDRESS_LENGTH + FRAME_TYPE_LENGTH + SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES:
+                if DEBUG_FRAME_PARSING:
+                    logger.debug(f"Need more data for header. Buffer len: {len(self.buffer)}")
                 break  # Need more data for header
 
+            # ヘッダーフィールドを解析
             header_start = len(START_MARKER)
             mac_bytes = self.buffer[header_start : header_start + MAC_ADDRESS_LENGTH]
-            len_bytes = self.buffer[
-                header_start + MAC_ADDRESS_LENGTH : header_start + HEADER_LENGTH
-            ]
             sender_mac = ":".join(f"{b:02x}" for b in mac_bytes)
 
+            # フレームタイプを取得（1バイト: 1=HASH, 2=DATA, 3=EOF）
+            frame_type_pos = header_start + MAC_ADDRESS_LENGTH
+            frame_type = self.buffer[frame_type_pos]
+            
+            # シーケンス番号を取得（4バイト）
+            seq_num_pos = frame_type_pos + FRAME_TYPE_LENGTH
+            seq_bytes = self.buffer[seq_num_pos:seq_num_pos + SEQUENCE_NUM_LENGTH]
             try:
-                if len(len_bytes) != LENGTH_FIELD_BYTES:
-                    logger.error(
-                        f"Frame decode error: Incorrect length for len_bytes ({len(len_bytes)}). Discarding marker and searching next."
-                    )
-                    # --- 同期回復処理 ---
-                    next_start = self.buffer.find(
-                        START_MARKER, 1
-                    )  # 現在のマーカーの次を探す
-                    if next_start != -1:
-                        self.buffer = self.buffer[next_start:]
-                    else:
-                        self.buffer.clear()  # 見つからなければクリア
-                    self.frame_start_time = None  # タイムアウト処理後はリセット
-                    continue
+                seq_num = int.from_bytes(seq_bytes, byteorder="big")
+            except ValueError:
+                logger.error(f"Frame decode error: Invalid sequence number. Discarding frame.")
+                next_start = self.buffer.find(START_MARKER, 1)
+                if next_start != -1:
+                    self.buffer = self.buffer[next_start:]
+                else:
+                    self.buffer.clear()
+                self.frame_start_time = None
+                continue
+                
+            # データ長を取得（4バイト）
+            data_len_pos = seq_num_pos + SEQUENCE_NUM_LENGTH
+            len_bytes = self.buffer[data_len_pos:data_len_pos + LENGTH_FIELD_BYTES]
+            
+            try:
                 data_len = int.from_bytes(len_bytes, byteorder="big")
             except ValueError:
                 logger.error(
                     f"Frame decode error: ValueError for DataLen ({len_bytes.hex()}). Discarding marker and searching next."
                 )
-                # --- 同期回復処理 ---
                 next_start = self.buffer.find(START_MARKER, 1)
                 if next_start != -1:
                     self.buffer = self.buffer[next_start:]
                 else:
                     self.buffer.clear()
-                self.frame_start_time = None  # タイムアウト処理後はリセット
+                self.frame_start_time = None
                 continue
 
-            # データ長チェックを少し緩める (ESP-NOW最大ペイロードサイズを考慮)
-            # max_reasonable_data_len = 250 # ESP-NOWの最大ペイロード長
-            max_reasonable_data_len = 512  # 念のため少し大きめに設定
+            # データ長の妥当性チェック
+            max_reasonable_data_len = 512  # ESP-NOW最大ペイロード長より少し大きく
             if data_len > max_reasonable_data_len:
                 logger.warning(
-                    f"Unreasonable data_len: {data_len} (max: {max_reasonable_data_len}). Discarding marker and searching next."
+                    f"Unreasonable data_len: {data_len} (max: {max_reasonable_data_len}) for {sender_mac}. Discarding frame."
                 )
-                # --- 同期回復処理 ---
                 next_start = self.buffer.find(START_MARKER, 1)
                 if next_start != -1:
                     self.buffer = self.buffer[next_start:]
                 else:
                     self.buffer.clear()
-                self.frame_start_time = None  # タイムアウト処理後はリセット
+                self.frame_start_time = None
                 continue
 
-            frame_end_index = (
-                len(START_MARKER) + HEADER_LENGTH + data_len + FOOTER_LENGTH
-            )
+            # フレーム全体の長さを計算
+            # START_MARKER + MAC + FRAME_TYPE + SEQUENCE + DATA_LEN + DATA + CHECKSUM + END_MARKER
+            frame_end_index = (len(START_MARKER) + MAC_ADDRESS_LENGTH + FRAME_TYPE_LENGTH + 
+                             SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES + data_len + 
+                             CHECKSUM_LENGTH + len(END_MARKER))
+                             
             if len(self.buffer) < frame_end_index:
-                # logger.debug(f"Need more data for full frame. Expected: {frame_end_index}, Have: {len(self.buffer)}")
+                if DEBUG_FRAME_PARSING:
+                    logger.debug(f"Need more data for full frame. Expected: {frame_end_index}, Have: {len(self.buffer)}")
                 break  # Need more data for full frame
 
-            data_start_index = len(START_MARKER) + HEADER_LENGTH
+            # データ部分の位置を計算
+            data_start_index = len(START_MARKER) + MAC_ADDRESS_LENGTH + FRAME_TYPE_LENGTH + SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES
             chunk_data = self.buffer[data_start_index : data_start_index + data_len]
-            footer_start_index = data_start_index + data_len
-            footer = self.buffer[footer_start_index:frame_end_index]
+            
+            # チェックサム部分の位置
+            checksum_start = data_start_index + data_len
+            checksum_bytes = self.buffer[checksum_start:checksum_start + CHECKSUM_LENGTH]
+            
+            # エンドマーカーの位置
+            end_marker_start = checksum_start + CHECKSUM_LENGTH
+            footer = self.buffer[end_marker_start:frame_end_index]
 
+            # エンドマーカーを確認
             if footer == END_MARKER:
                 processed_frame = True
-                self.frame_start_time = None  # 正常にフレームを処理したのでリセット
-                # Handle HASH frame
-                if data_len > 5 and chunk_data.startswith(b"HASH:"):
+                self.frame_start_time = None  # 正常にフレームを処理したので時間計測リセット
+                
+                # チェックサムの検証（オプション）
+                # 実際のチェックサム検証コードはここに追加
+                
+                # フレームタイプに応じた処理
+                frame_type_str = "UNKNOWN"
+                if frame_type == FRAME_TYPE_HASH:
+                    frame_type_str = "HASH"
                     try:
-                        hash_str = chunk_data[5:].decode("ascii")
-                        logger.info(
-                            f"Received HASH frame from {sender_mac}: {hash_str}"
-                        )
-                        # TODO: Store hash if validation is needed
+                        hash_str = chunk_data[5:].decode('ascii')
+                        logger.info(f"Received HASH frame from {sender_mac}: {hash_str}")
                     except UnicodeDecodeError:
-                        logger.warning(
-                            f"Could not decode HASH payload from {sender_mac}: {chunk_data[5:].hex()}"
-                        )
-                # Handle EOF frame
-                elif data_len == 4 and chunk_data == b"EOF!":
+                        logger.warning(f"Could not decode HASH payload from {sender_mac}")
+                
+                elif frame_type == FRAME_TYPE_EOF:
+                    frame_type_str = "EOF"
                     if sender_mac in image_buffers:
-                        logger.info(
-                            f"EOF frame received for {sender_mac}. Assembling image ({len(image_buffers[sender_mac])} bytes)."
-                        )
-                        asyncio.create_task(
-                            save_image(sender_mac, bytes(image_buffers[sender_mac]))
-                        )
+                        logger.info(f"EOF frame received for {sender_mac}. Assembling image ({len(image_buffers[sender_mac])} bytes).")
+                        asyncio.create_task(save_image(sender_mac, bytes(image_buffers[sender_mac])))
                         del image_buffers[sender_mac]
                         if sender_mac in last_receive_time:
                             del last_receive_time[sender_mac]
                     else:
                         logger.warning(f"EOF for {sender_mac} but no buffer found.")
-                # Handle regular data chunk
-                elif data_len > 0:
+                
+                elif frame_type == FRAME_TYPE_DATA:
+                    frame_type_str = "DATA"
                     if sender_mac not in image_buffers:
                         image_buffers[sender_mac] = bytearray()
-                        logger.info(
-                            f"Started receiving new image data from {sender_mac}"
-                        )
+                        logger.info(f"Started receiving new image data from {sender_mac}")
                     image_buffers[sender_mac].extend(chunk_data)
                     last_receive_time[sender_mac] = time.monotonic()
-                # Handle zero-length data frame
-                elif data_len == 0:
-                    logger.debug(
-                        f"Frame with data_len 0 received from {sender_mac}. Ignoring."
-                    )
+                else:
+                    logger.warning(f"Unknown frame type {frame_type} from {sender_mac}")
+
+                if DEBUG_FRAME_PARSING:
+                    logger.debug(f"Processed {frame_type_str} frame (seq={seq_num}) from {sender_mac}, {data_len} bytes")
 
                 # フレームを処理したのでバッファから削除
                 self.buffer = self.buffer[frame_end_index:]
             else:
                 logger.warning(
-                    f"Invalid end marker for {sender_mac} (got {footer.hex()}). Discarding marker and searching next."
+                    f"Invalid end marker for {sender_mac} (got {footer.hex()}, expected {END_MARKER.hex()}). Discarding frame."
                 )
-                # --- 同期回復処理 ---
+                # 同期回復処理
                 next_start = self.buffer.find(START_MARKER, 1)
                 if next_start != -1:
                     self.buffer = self.buffer[next_start:]
                 else:
                     self.buffer.clear()
-                self.frame_start_time = None  # タイムアウト処理後はリセット
+                self.frame_start_time = None
 
         # return processed_frame # この関数の戻り値は現在使われていない
 
