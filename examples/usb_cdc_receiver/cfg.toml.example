@@ -1,0 +1,10 @@
+[image-sender]
+receiver_mac = "AA:BB:CC:DD:EE:FF"
+
+[image-raciver]
+cam1 = "11:22:33:44:55:66"
+cam2 = "77:88:99:00:11:22"
+cam3 = "33:44:55:66:77:88"
+cam4 = "99:00:11:22:33:44"
+# cam5 = "XX:XX:XX:XX:XX:XX"
+# cam6 = "XX:XX:XX:XX:XX:XX"
