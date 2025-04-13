@@ -31,6 +31,10 @@ pub struct Config {
     image_raciver_cam3: &'static str,
     #[default("")]
     image_raciver_cam4: &'static str,
+    #[default("")]
+    image_raciver_cam5: &'static str,
+    #[default("")]
+    image_raciver_cam6: &'static str,
 }
 
 // 受信機のMAC アドレスを表す構造体
@@ -394,6 +398,14 @@ fn main() -> Result<()> {
 
         if !app_config.image_raciver_cam4.is_empty() {
             cameras.push(("cam4", app_config.image_raciver_cam4));
+        }
+
+        if !app_config.image_raciver_cam5.is_empty() {
+            cameras.push(("cam5", app_config.image_raciver_cam5));
+        }
+
+        if !app_config.image_raciver_cam6.is_empty() {
+            cameras.push(("cam6", app_config.image_raciver_cam6));
         }
 
         if cameras.is_empty() {

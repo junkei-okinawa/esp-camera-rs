@@ -8,6 +8,10 @@ pub struct Config {
     image_raciver_cam3: &'static str,
     #[default("")]
     image_raciver_cam4: &'static str,
+    #[default("")]
+    image_raciver_cam5: &'static str,
+    #[default("")]
+    image_raciver_cam6: &'static str,
 }
 
 fn main() {
@@ -39,6 +43,16 @@ fn main() {
 
     if !app_config.image_raciver_cam4.is_empty() {
         println!("Camera 4: {}", app_config.image_raciver_cam4);
+        found_cameras += 1;
+    }
+
+    if !app_config.image_raciver_cam5.is_empty() {
+        println!("Camera 5: {}", app_config.image_raciver_cam5);
+        found_cameras += 1;
+    }
+
+    if !app_config.image_raciver_cam6.is_empty() {
+        println!("Camera 6: {}", app_config.image_raciver_cam6);
         found_cameras += 1;
     }
 
