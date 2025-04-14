@@ -1,10 +1,10 @@
 # esp-camera-rs
 
-Rust wrapper library to interface with the ESP32 and ESP32 S3 cameras. The way to define configuration for camera was reworked, get methods added and set methods rewrote to use macro.
+Rust wrapper library to interface with the ESP32 cameras. The way to define configuration for camera was reworked, get methods added and set methods rewrote to use macro.
 
 ## 概要
 
-このライブラリは、ESP32およびESP32-S3マイクロコントローラーとカメラモジュールを簡単に連携させるためのRustラッパーです。カメラの設定方法を改良し、より使いやすいインターフェースを提供しています。
+このライブラリは、ESP32およびESP32-C3(ESP32-S3)マイクロコントローラーとカメラモジュールを簡単に連携させるためのRustラッパーです。カメラの設定方法を改良し、より使いやすいインターフェースを提供しています。
 
 ## 特徴
 
