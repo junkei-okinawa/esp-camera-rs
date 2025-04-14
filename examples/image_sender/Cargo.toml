@@ -1,0 +1,41 @@
+[package]
+name = "image-sender"
+version = "0.2.0"
+authors = ["junkei-okinawa"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.85"
+
+[[bin]]
+name = "image_sender"
+path = "src/main.rs"
+
+[lib]
+name = "image_sender"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true    # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[dependencies]
+anyhow = "1.0"
+log = "0.4"
+toml-cfg = "=0.2"
+esp-idf-svc = "0.51.0"
+esp-idf-sys = "0.36"
+embedded-svc = "0.28"
+sha2 = "0.10"
+thiserror = "2.0.12"
+
+# esp-camera-rs = { git = "https://github.com/junkei-okinawa/esp-camera-rs.git" }
+# Uncomment next string to use local version of the lib.
+# You also need to run `git submodule init` and `git submodule update`
+esp-camera-rs = { path = "../../" }
+
+[build-dependencies]
+embuild = "0.33"
+toml-cfg = "=0.2"
