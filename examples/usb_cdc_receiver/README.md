@@ -1,4 +1,4 @@
-# ESP-NOW USB CDCレシーバー
+# ESP-NOW USB CDC Reciver
 
 ESP-NOWプロトコルを使用してESP32カメラモジュールから送信された画像データを受信し、USB CDC（Communications Device Class）を通じてホストPCに転送するソフトウェアです。
 

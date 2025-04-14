@@ -43,13 +43,35 @@ fn main() -> anyhow::Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
 
     // WiFiを初期化（ESP-NOWに必要）
-    info!("ESP-NOW用のWiFiペリフェラルを初期化しています");
+    info!("ESP-NOW用のWiFiペリフェラルを初期化しています - STAモード");
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs))?,
         sysloop,
     )?;
+
+    // Wi-Fi設定をRAMに保存（NVS書き込み回避）
+    unsafe {
+        esp_idf_svc::sys::esp_wifi_set_storage(esp_idf_svc::sys::wifi_storage_t_WIFI_STORAGE_RAM);
+    }
+
+    // STAモードで設定（接続は不要）
+    wifi.set_configuration(&esp_idf_svc::wifi::Configuration::Client(
+        esp_idf_svc::wifi::ClientConfiguration {
+            ssid: "".try_into().unwrap(),                     // Empty SSID
+            password: "".try_into().unwrap(),                 // Empty Password
+            auth_method: esp_idf_svc::wifi::AuthMethod::None, // No auth needed
+            ..Default::default()
+        },
+    ))?;
+
     wifi.start()?;
-    info!("WiFiペリフェラルが起動しました");
+    info!("WiFiペリフェラルがSTAモードで起動しました");
+
+    // Wi-Fiパワーセーブを無効化（ESP-NOWの応答性向上）
+    unsafe {
+        esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_NONE);
+    }
+    info!("Wi-Fi Power Save を無効化しました");
 
     // LEDを初期化 - 新しいインターフェースでは個別のピンを取得
     let mut led = StatusLed::new(peripherals.pins.gpio4)?;
@@ -79,8 +101,13 @@ fn main() -> anyhow::Result<()> {
     esp_now.add_peer(&config.receiver_mac)?;
 
     // 定期送信のためのパラメータ設定
-    let target_interval = Duration::from_secs(60); // 目標間隔: 60秒
+    let target_interval = Duration::from_secs(config.sleep_duration_seconds); // 設定ファイルから読み込んだスリープ時間
     let min_sleep_duration = Duration::from_secs(1); // 最小スリープ時間: 1秒
+
+    info!(
+        "設定されたディープスリープ時間: {}秒",
+        config.sleep_duration_seconds
+    );
 
     // メインループ
     loop {

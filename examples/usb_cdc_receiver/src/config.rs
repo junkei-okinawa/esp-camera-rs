@@ -31,33 +31,65 @@ pub fn load_camera_configs() -> Vec<CameraConfig> {
     let config = CONFIG;
     let mut cameras = Vec::new();
 
+    // 詳細なログ出力を追加（設定読み込みの診断用）
+    info!("Loading camera configurations from cfg.toml...");
+    info!(
+        "Raw config - cam1: '{}', cam2: '{}', cam3: '{}', cam4: '{}'",
+        if config.image_sender_cam1.is_empty() {
+            "<empty>"
+        } else {
+            config.image_sender_cam1
+        },
+        if config.image_sender_cam2.is_empty() {
+            "<empty>"
+        } else {
+            config.image_sender_cam2
+        },
+        if config.image_sender_cam3.is_empty() {
+            "<empty>"
+        } else {
+            config.image_sender_cam3
+        },
+        if config.image_sender_cam4.is_empty() {
+            "<empty>"
+        } else {
+            config.image_sender_cam4
+        }
+    );
+
     // カメラ1の設定を確認
     if !config.image_sender_cam1.is_empty() {
+        info!("Processing camera 1 config: {}", config.image_sender_cam1);
         add_camera_if_valid(&mut cameras, "cam1", config.image_sender_cam1);
     }
 
     // カメラ2の設定を確認
     if !config.image_sender_cam2.is_empty() {
+        info!("Processing camera 2 config: {}", config.image_sender_cam2);
         add_camera_if_valid(&mut cameras, "cam2", config.image_sender_cam2);
     }
 
     // カメラ3の設定を確認
     if !config.image_sender_cam3.is_empty() {
+        info!("Processing camera 3 config: {}", config.image_sender_cam3);
         add_camera_if_valid(&mut cameras, "cam3", config.image_sender_cam3);
     }
 
     // カメラ4の設定を確認
     if !config.image_sender_cam4.is_empty() {
+        info!("Processing camera 4 config: {}", config.image_sender_cam4);
         add_camera_if_valid(&mut cameras, "cam4", config.image_sender_cam4);
     }
 
     // カメラ5の設定を確認
     if !config.image_sender_cam5.is_empty() {
+        info!("Processing camera 5 config: {}", config.image_sender_cam5);
         add_camera_if_valid(&mut cameras, "cam5", config.image_sender_cam5);
     }
 
     // カメラ6の設定を確認
     if !config.image_sender_cam6.is_empty() {
+        info!("Processing camera 6 config: {}", config.image_sender_cam6);
         add_camera_if_valid(&mut cameras, "cam6", config.image_sender_cam6);
     }
 
