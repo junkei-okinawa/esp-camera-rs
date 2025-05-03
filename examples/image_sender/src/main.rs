@@ -11,17 +11,28 @@ use camera::CameraController;
 use config::AppConfig;
 use esp_now::{EspNowSender, ImageFrame};
 use led::StatusLed;
-use log::{error, info};
-use mac_address::MacAddress;
+use log::{error, info, warn};
 use sleep::DeepSleep;
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::peripherals::Peripherals,
+    hal::{
+        adc::{
+            attenuation::DB_12,
+            oneshot::config::{AdcChannelConfig, Calibration},
+            oneshot::{AdcChannelDriver, AdcDriver},
+        },
+        peripherals::Peripherals,
+    },
     nvs::EspDefaultNvsPartition,
     wifi::{BlockingWifi, EspWifi},
 };
 
+// --- 電圧測定用の定数 ---
+const MIN_MV: f32 = 128.0; // UnitCam GPIO0 の実測値に合わせて調整
+const MAX_MV: f32 = 3130.0; // UnitCam GPIO0 の実測値に合わせて調整
+const RANGE_MV: f32 = MAX_MV - MIN_MV;
+// --- ここまで 定数 ---
 /// アプリケーションのメインエントリーポイント
 fn main() -> anyhow::Result<()> {
     // ESP-IDFの各種初期化
@@ -31,16 +42,51 @@ fn main() -> anyhow::Result<()> {
     // 設定をロードする
     let config = AppConfig::load()?;
     info!("受信機MACアドレス: {}", config.receiver_mac);
-    info!(
-        "設定値としてのMACアドレス: {:?}",
-        config.receiver_mac.config_rs_mac_address()
-    );
 
     // ペリフェラルを初期化
     info!("ペリフェラルを初期化しています");
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+
+    // --- ADC2 を初期化 ---
+    info!("ADC2を初期化しています (GPIO0)");
+    let adc2 = AdcDriver::new(peripherals.adc2)?;
+    let adc_config = AdcChannelConfig {
+        attenuation: DB_12,
+        calibration: Calibration::Line,
+        ..Default::default()
+    };
+    let mut adc2_ch1 = AdcChannelDriver::new(&adc2, peripherals.pins.gpio0, &adc_config)?;
+    // --- ここまで ADC2 初期化 ---
+
+    // --- 電圧測定 & パーセンテージ計算 (WiFi開始前) ---
+    info!("電圧を測定しパーセンテージを計算します (WiFi開始前)...");
+    let mut measured_voltage_percent: u8 = 0; // 送信失敗時用のデフォルト値 (0%)
+    match adc2_ch1.read() {
+        Ok(voltage_mv_u16) => {
+            let voltage_mv = voltage_mv_u16 as f32; // f32 に変換して計算
+            info!("電圧測定成功: {:.0} mV", voltage_mv);
+            // パーセンテージ計算 (0-100 の範囲にクランプし、u8 に丸める)
+            let percentage = if RANGE_MV <= 0.0 {
+                0.0
+            } else {
+                ((voltage_mv - MIN_MV) / RANGE_MV * 100.0)
+                    .max(0.0)
+                    .min(100.0)
+            };
+            measured_voltage_percent = percentage.round() as u8; // u8 に丸める
+            info!("計算されたパーセンテージ: {} %", measured_voltage_percent);
+        }
+        Err(e) => {
+            error!("ADC読み取りエラー: {:?}. 電圧は0%として扱います。", e);
+            // エラーでも続行するが、パーセンテージは0として扱う
+        }
+    }
+    // ADCドライバはこの後不要になるので、ここでドロップしても良い
+    // drop(adc2_ch1);
+    // drop(adc2);
+    // --- 電圧測定ここまで ---
 
     // WiFiを初期化（ESP-NOWに必要）
     info!("ESP-NOW用のWiFiペリフェラルを初期化しています - STAモード");
@@ -64,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         },
     ))?;
 
+    // WiFiを起動 (ESP-NOWに必要。この時点でADC2は使えなくなる)
     wifi.start()?;
     info!("WiFiペリフェラルがSTAモードで起動しました");
 
@@ -109,76 +156,93 @@ fn main() -> anyhow::Result<()> {
         config.sleep_duration_seconds
     );
 
-    // メインループ
-    loop {
-        let loop_start_time = Instant::now(); // ループ開始時間を記録
+    // --- メイン処理 (Deep Sleep 前の1サイクル) ---
+    let loop_start_time = Instant::now(); // 処理開始時間を記録
 
-        // 画像を撮影
-        info!("写真を撮影します");
-        led.indicate_capture()?;
+    // 画像を撮影
+    info!("写真を撮影します");
+    led.indicate_capture()?;
 
-        match camera.capture_image() {
-            Ok(framebuffer) => {
-                info!(
-                    "撮影完了: {width}x{height} {size} バイト",
-                    width = framebuffer.width(),
-                    height = framebuffer.height(),
-                    size = framebuffer.data().len(),
-                );
+    match camera.capture_image() {
+        Ok(framebuffer) => {
+            info!(
+                "撮影完了: {width}x{height} {size} バイト",
+                width = framebuffer.width(),
+                height = framebuffer.height(),
+                size = framebuffer.data().len(),
+            );
+            led.blink_success()?;
 
-                // 撮影成功を示すLEDパターン
-                led.blink_success()?;
+            // 画像データ取得
+            let data = framebuffer.data();
 
-                // 画像データ取得
-                let data = framebuffer.data();
-
-                // SHA256ハッシュを計算
-                let hash_hex = match ImageFrame::calculate_hash(data) {
-                    Ok(hash) => {
-                        info!("画像SHA256: {}", hash);
-                        hash
-                    }
-                    Err(e) => {
-                        error!("ハッシュ計算エラー: {:?}", e);
-                        continue;
-                    }
-                };
-
-                // ハッシュメッセージを準備
-                let hash_payload = ImageFrame::prepare_hash_message(&hash_hex);
-
-                // ハッシュを送信
-                info!("画像ハッシュを送信します");
-                if let Err(e) = esp_now.send(&config.receiver_mac, &hash_payload, 1000) {
-                    error!("ハッシュ送信エラー: {:?}", e);
+            // SHA256ハッシュを計算
+            let hash_hex = match ImageFrame::calculate_hash(data) {
+                Ok(hash) => {
+                    info!("画像SHA256: {}", hash);
+                    hash
+                }
+                Err(e) => {
+                    error!("ハッシュ計算エラー: {:?}. スリープします。", e);
                     led.blink_error()?;
-                    continue; // ハッシュ送信に失敗した場合は画像チャンクは送信しない
+                    let _ = DeepSleep::sleep_with_timing(
+                        loop_start_time,
+                        target_interval,
+                        min_sleep_duration,
+                    );
+                    return Ok(());
                 }
+            };
 
-                // 画像チャンクを送信
-                info!("画像チャンクを送信します...");
-                match esp_now.send_image_chunks(&config.receiver_mac, data, 250, 5) {
-                    Ok(_) => {
-                        info!("画像送信完了");
-                        led.indicate_sending()?;
-                    }
-                    Err(e) => {
-                        error!("画像送信エラー: {:?}", e);
-                        led.blink_error()?;
-                    }
-                }
-            }
-            Err(e) => {
-                error!("画像撮影エラー: {:?}", e);
+            // ハッシュメッセージを準備 (保存しておいた電圧パーセンテージを使用)
+            let hash_payload =
+                ImageFrame::prepare_hash_message(&hash_hex, measured_voltage_percent);
+
+            // ハッシュを送信
+            info!("画像ハッシュ (と電圧情報) を送信します");
+            if let Err(e) = esp_now.send(&config.receiver_mac, &hash_payload, 1000) {
+                error!("ハッシュ送信エラー: {:?}. スリープします。", e);
                 led.blink_error()?;
+                let _ = DeepSleep::sleep_with_timing(
+                    loop_start_time,
+                    target_interval,
+                    min_sleep_duration,
+                );
+                return Ok(());
+            }
+
+            // 画像チャンクを送信
+            info!("画像チャンクを送信します...");
+            match esp_now.send_image_chunks(&config.receiver_mac, data, 250, 5) {
+                Ok(_) => {
+                    info!("画像送信完了");
+                    led.indicate_sending()?;
+                }
+                Err(e) => {
+                    error!("画像送信エラー: {:?}. スリープします。", e);
+                    led.blink_error()?;
+                    let _ = DeepSleep::sleep_with_timing(
+                        loop_start_time,
+                        target_interval,
+                        min_sleep_duration,
+                    );
+                    return Ok(());
+                }
             }
         }
-
-        // ディープスリープ処理
-        info!("ディープスリープに入ります");
-        let _ = DeepSleep::sleep_with_timing(loop_start_time, target_interval, min_sleep_duration);
-
-        // ディープスリープから復帰した場合（通常は実行されない）
-        info!("ディープスリープから復帰しました");
+        Err(e) => {
+            error!("画像撮影エラー: {:?}. スリープします。", e);
+            led.blink_error()?;
+            let _ =
+                DeepSleep::sleep_with_timing(loop_start_time, target_interval, min_sleep_duration);
+            return Ok(());
+        }
     }
+
+    // ディープスリープ処理
+    info!("ディープスリープに入ります");
+    let _ = DeepSleep::sleep_with_timing(loop_start_time, target_interval, min_sleep_duration);
+
+    // 通常はここまで到達しない
+    Ok(())
 }
