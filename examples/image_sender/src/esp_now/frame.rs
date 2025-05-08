@@ -53,15 +53,6 @@ impl ImageFrame {
     pub fn prepare_hash_message(hash: &str, voltage_percent: u8) -> Vec<u8> {
         format!("HASH:{},VOLT:{}", hash, voltage_percent).into_bytes()
     }
-
-    /// EOFメッセージを準備します
-    ///
-    /// # 戻り値
-    ///
-    /// "EOF!"というバイトシーケンス
-    pub fn prepare_eof_message() -> &'static [u8] {
-        b"EOF!"
-    }
 }
 
 #[cfg(test)]

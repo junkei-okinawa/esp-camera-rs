@@ -11,6 +11,15 @@ pub struct Config {
 
     #[default(60)]
     sleep_duration_seconds: u64,
+
+    #[default(3600)]
+    sleep_duration_seconds_for_long: u64,
+
+    #[default("SVGA")]
+    frame_size: &'static str,
+
+    #[default(0)] // JPEG品質のデフォルト値
+    jpeg_quality: i32,
 }
 
 /// 設定エラー
@@ -28,6 +37,15 @@ pub struct AppConfig {
 
     /// ディープスリープ時間（秒）
     pub sleep_duration_seconds: u64,
+
+    /// ディープスリープ時間（長時間用、秒）
+    pub sleep_duration_seconds_for_long: u64,
+
+    /// フレームサイズ
+    pub frame_size: String,
+
+    /// JPEG品質
+    pub jpeg_quality: i32,
 }
 
 impl AppConfig {
@@ -49,10 +67,20 @@ impl AppConfig {
 
         // ディープスリープ時間を設定
         let sleep_duration_seconds = config.sleep_duration_seconds;
+        let sleep_duration_seconds_for_long = config.sleep_duration_seconds_for_long;
+
+        // フレームサイズを設定
+        let frame_size = config.frame_size.to_string();
+
+        // JPEG品質を設定
+        let jpeg_quality = config.jpeg_quality;
 
         Ok(AppConfig {
             receiver_mac,
             sleep_duration_seconds,
+            sleep_duration_seconds_for_long,
+            frame_size: frame_size,
+            jpeg_quality,
         })
     }
 }
@@ -65,6 +93,9 @@ mod tests {
     fn simulate_config_load(
         receiver_mac: &str,
         sleep_duration: u64,
+        sleep_duration_for_long: u64,
+        frame_size: &str,
+        jpeg_quality: i32, // テスト用にjpeg_quality引数を追加
     ) -> Result<AppConfig, ConfigError> {
         // MACアドレスのパース
         let mac = MacAddress::from_str(receiver_mac)
@@ -73,29 +104,38 @@ mod tests {
         Ok(AppConfig {
             receiver_mac: mac,
             sleep_duration_seconds: sleep_duration,
+            sleep_duration_seconds_for_long,
+            frame_size: frame_size.to_string(),
+            jpeg_quality, // テスト用にjpeg_qualityをAppConfigに設定
         })
     }
 
     #[test]
     fn test_config_sleep_duration() {
         // 有効な構成でシミュレーション
-        let config = simulate_config_load("11:22:33:44:55:66", 120).unwrap();
+        let config = simulate_config_load("11:22:33:44:55:66", 120, 3600, "SVGA", 85).unwrap();
 
         // スリープ時間が正しく設定されていることを確認
         assert_eq!(config.sleep_duration_seconds, 120);
+        assert_eq!(config.sleep_duration_seconds_for_long, 3600);
+        assert_eq!(config.frame_size, "SVGA");
+        assert_eq!(config.jpeg_quality, 85);
     }
 
     #[test]
     fn test_config_default_sleep_duration() {
         // デフォルト値のチェック（実際のデフォルト値と合わせる）
-        let config = simulate_config_load("11:22:33:44:55:66", 60).unwrap();
+        let config = simulate_config_load("11:22:33:44:55:66", 60, 3600, "SVGA", 0).unwrap();
         assert_eq!(config.sleep_duration_seconds, 60);
+        assert_eq!(config.sleep_duration_seconds_for_long, 3600);
+        assert_eq!(config.frame_size, "SVGA");
+        assert_eq!(config.jpeg_quality, 0);
     }
 
     #[test]
     fn test_invalid_mac_address() {
         // 無効なMACアドレスでエラーが発生することを確認
-        let result = simulate_config_load("invalid-mac", 60);
+        let result = simulate_config_load("invalid-mac", 60, 3600, "SVGA", 75);
         assert!(result.is_err());
 
         match result {

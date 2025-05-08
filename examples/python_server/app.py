@@ -7,11 +7,30 @@ from datetime import datetime
 import logging  # Ensure logging is imported
 import argparse
 
+from dotenv import load_dotenv
+load_dotenv()
+
+import influxdb_client
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
+
+
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Voltage log file
+VOLT_LOG_FILE = "volt.log"
+
+# influxDB
+token = os.environ.get("INFLUXDB_TOKEN")
+org = "agri"
+url = "http://localhost:8086"
+bucket = "balcony"
+client = influxdb_client.InfluxDBClient(url=url, token=token, org=org)
+write_api = client.write_api(write_options=SYNCHRONOUS)
 
 # --- Settings ---
 DEFAULT_SERIAL_PORT = "/dev/ttyACM0"
@@ -271,8 +290,34 @@ class SerialProtocol(asyncio.Protocol):
                 if frame_type == FRAME_TYPE_HASH:
                     frame_type_str = "HASH"
                     try:
-                        hash_str = chunk_data[5:].decode('ascii')
-                        logger.info(f"Received HASH frame from {sender_mac}: {hash_str}")
+                        # HASHフレームのペイロードの先頭5バイトは 'HASH:' なのでスキップ
+                        payload_str = chunk_data[5:].decode('ascii')
+                        logger.info(f"Received HASH frame from {sender_mac}: {payload_str}")
+
+                        # 電圧情報を抽出
+                        if ",VOLT:" in payload_str:
+                            parts = payload_str.split(",VOLT:")
+                            # hash_value = parts[0] # HASH値自体はここでは不要
+                            volt_value = parts[1]
+                            timestamp_volt = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] # ミリ秒まで、区切りをピリオドに変更
+                            volt_log_entry = f"{timestamp_volt},{sender_mac},{volt_value}\n" # 改行文字を修正
+                            try:
+                                with open(VOLT_LOG_FILE, "a") as vf:
+                                    vf.write(volt_log_entry)
+                            except Exception as e:
+                                logger.error(f"Error writing to volt.log: {e}")
+
+                            try:
+                                point = (
+                                    Point("data").tag("mac_address", sender_mac).field("voltage", float(volt_value))
+                                )
+                                write_api.write(bucket=bucket, org=org, record=point) 
+                            except Exception as e:
+                                logger.error(f"Error writing to influxDB: {e}")
+
+                        else:
+                            logger.warning(f"VOLT not found in HASH payload from {sender_mac}: {payload_str}")
+
                     except UnicodeDecodeError:
                         logger.warning(f"Could not decode HASH payload from {sender_mac}")
                 

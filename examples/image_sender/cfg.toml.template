@@ -2,3 +2,9 @@
 receiver_mac = "11:22:33:44:55:66"
 # ディープスリープ時間（秒）
 sleep_duration_seconds = 60
+sleep_duration_seconds_for_long = 3600
+frame_size = "SVGA"
+
+# 利用可能な値の例 (詳細は esp-idf-sys のドキュメントを参照):
+# "96X96", "QQVGA", "QCIF", "HQVGA", "240X240", "QVGA", "CIF", "HVGA", "VGA", "SVGA",
+# "XGA", "HD", "SXGA", "UXGA", "FHD", "P_HD", "P_3MP", "QXGA", "QHD", "WQXGA", "P_FHD", "QSXGA"
