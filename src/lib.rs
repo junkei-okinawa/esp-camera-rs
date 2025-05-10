@@ -174,7 +174,7 @@ impl<'a> CameraSensor<'a> {
     define_get_set_function!(aec2, set_aec2, bool);
     define_get_set_function!(awb_gain, set_awb_gain, bool);
     define_get_set_function!(agc_gain, set_agc_gain, bool);
-    define_get_set_function!(aec_value, set_aec_value, bool);
+    define_get_set_function!(aec_value, set_aec_value, i32); // bool から i32 に変更
     define_get_set_function!(special_effect, set_special_effect, i32);
     define_get_set_function!(wb_mode, set_wb_mode, i32);
     define_get_set_function!(ae_level, set_ae_level, i32);

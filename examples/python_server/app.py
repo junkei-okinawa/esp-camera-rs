@@ -307,13 +307,14 @@ class SerialProtocol(asyncio.Protocol):
                             except Exception as e:
                                 logger.error(f"Error writing to volt.log: {e}")
 
-                            try:
-                                point = (
-                                    Point("data").tag("mac_address", sender_mac).field("voltage", float(volt_value))
-                                )
-                                write_api.write(bucket=bucket, org=org, record=point) 
-                            except Exception as e:
-                                logger.error(f"Error writing to influxDB: {e}")
+                            if volt_value != "100": # 100%の時は初回起動またはデバッグ時のため記録しない
+                                try:
+                                    point = (
+                                        Point("data").tag("mac_address", sender_mac).field("voltage", float(volt_value))
+                                    )
+                                    write_api.write(bucket=bucket, org=org, record=point) 
+                                except Exception as e:
+                                    logger.error(f"Error writing to influxDB: {e}")
 
                         else:
                             logger.warning(f"VOLT not found in HASH payload from {sender_mac}: {payload_str}")

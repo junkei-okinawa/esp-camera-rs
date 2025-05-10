@@ -1,7 +1,7 @@
 use esp_camera_rs::{Camera, CameraParams, FrameBuffer};
 use esp_idf_svc::hal::gpio;
 use esp_idf_sys::camera::*;
-use log::{error, info, warn};
+use log::{error, info, warn}; // logクレートの必要な要素をインポート
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)] // Added Clone
@@ -52,14 +52,14 @@ pub enum CustomFrameSize {
 pub struct M5UnitCamConfig {
     // pub with_psram: bool, // Removed unused field
     pub frame_size: CustomFrameSize,
-    pub jpeg_quality: i32,
+    // pub jpeg_quality: i32, // JPEG品質設定は現在エラーを引き起こすため削除 (NO-EOI error)
 }
 
 impl Default for M5UnitCamConfig {
     fn default() -> Self {
         Self {
             frame_size: CustomFrameSize::Svga, // デフォルトはSVGA
-            jpeg_quality: 12,                  // デフォルトのJPEG品質
+                                               // jpeg_quality: 12, // デフォルトのJPEG品質、現在は未使用
         }
     }
 }
@@ -176,7 +176,7 @@ impl CameraController {
             .set_sda_pin(sda_pin)
             .set_scl_pin(scl_pin)
             .set_frame_size(config.frame_size as u32) // Cast to u32
-            .set_jpeg_quality(config.jpeg_quality) // jpeg_quality を設定
+            // .set_jpeg_quality(config.jpeg_quality) // 注意: この設定を有効にすると `cam_hal: NO-EOI` エラーが発生する (2025-05-09時点)
             .set_fb_location(camera_fb_location_t_CAMERA_FB_IN_DRAM);
 
         let camera =
@@ -199,6 +199,56 @@ impl CameraController {
         self.camera
             .get_framebuffer()
             .ok_or(CameraError::CaptureFailed)
+    }
+
+    /// 露光設定を行います。
+    ///
+    /// # 引数
+    /// * `auto` - true の場合、自動露出制御 (AEC) を有効にします。false の場合、AECを無効にします。
+    /// * `manual_value` - `auto` が false の場合に手動で設定する露光値 (AEC value)。
+    ///                  `lib.rs` の `set_aec_value` が `i32` 型を期待するようになったため、
+    ///                  この `i32` 値が直接露光関連の設定値として使用されます。
+    pub fn configure_exposure(
+        &self,
+        auto: bool,
+        manual_value: Option<i32>,
+    ) -> Result<(), CameraError> {
+        let sensor = self.camera.sensor();
+        if auto {
+            sensor
+                .set_exposure_ctrl(true) // sensor.set_exposure_ctrl(bool) を使用
+                .map_err(|e| CameraError::InitFailed(format!("自動露出有効化エラー: {:?}", e)))?;
+            info!("自動露出制御 (AEC) を有効にしました。");
+        } else {
+            sensor
+                .set_exposure_ctrl(false) // sensor.set_exposure_ctrl(bool) を使用
+                .map_err(|e| CameraError::InitFailed(format!("自動露出無効化エラー: {:?}", e)))?;
+            info!("自動露出制御 (AEC) を無効にしました。");
+
+            if let Some(value_i32) = manual_value {
+                // sensor.set_aec_value() は lib.rs により i32 型の引数を取ります。
+                // これにより、指定された value_i32 が露光レベルとして設定されます。
+                sensor
+                    .set_aec_value(value_i32) // sensor.set_aec_value(i32) を使用
+                    .map_err(|e| {
+                        CameraError::InitFailed(format!(
+                            "set_aec_value({}) 呼び出しエラー: {:?}",
+                            value_i32, e
+                        ))
+                    })?;
+                info!("手動露光値 (AEC value) を {} に設定しました。", value_i32);
+            } else {
+                info!("手動露光値が指定されなかったため、AEC value の設定はスキップされました。");
+            }
+        }
+        Ok(())
+    }
+
+    /// 現在のAEC値を取得します。
+    ///
+    /// `lib.rs` の `aec_value` ゲッターは `i32` 型の値を返します。
+    pub fn get_current_aec_value(&self) -> i32 {
+        self.camera.sensor().aec_value() // sensor.aec_value() -> i32 を使用
     }
 }
 

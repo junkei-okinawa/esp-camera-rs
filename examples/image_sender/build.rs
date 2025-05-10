@@ -2,12 +2,19 @@
 pub struct Config {
     #[default("")]
     receiver_mac: &'static str,
+    #[default(60)]
+    sleep_duration_seconds: u64,
+    #[default(3600)]
+    sleep_duration_seconds_for_long: u64,
+    #[default("SVGA")]
+    frame_size: &'static str,
+    #[default(false)]
+    auto_exposure_enabled: bool,
+    #[default(255)]
+    camera_warmup_frames: u8,
 }
 
 fn main() {
-    // let _ = embuild::build::CfgArgs::output_propagated("ESP_IDF");
-    // let _ = embuild::build::LinkArgs::output_propagated("ESP_IDF")?;
-
     // Check if the `cfg.toml` file exists and has been filled out.
     if !std::path::Path::new("cfg.toml").exists() {
         panic!("You need to create a `cfg.toml` file with your Wi-Fi credentials! Use `cfg.toml.example` as a template.");

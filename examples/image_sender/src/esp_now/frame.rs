@@ -5,9 +5,6 @@ use sha2::{Digest, Sha256};
 pub enum FrameError {
     #[error("データが空です")]
     EmptyData,
-
-    #[error("ハッシュ計算エラー: {0}")]
-    HashCalculationError(String),
 }
 
 /// 画像フレームを処理するためのユーティリティ

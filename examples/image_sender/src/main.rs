@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod camera;
@@ -17,7 +16,6 @@ use sleep::DeepSleep;
 
 // 追加: FrameBuffer と Modem
 use esp_camera_rs::FrameBuffer;
-use esp_idf_svc::hal::gpio::OutputPin; // P のトレイト境界として使用
 use esp_idf_svc::hal::modem::Modem;
 
 use esp_idf_svc::{
@@ -43,15 +41,15 @@ const RANGE_MV: f32 = MAX_MV - MIN_MV;
 const LOW_VOLTAGE_THRESHOLD_PERCENT: u8 = 8; // このパーセンテージ未満で低電圧モード
                                              // --- ここまで 定数 ---
 
-// 新しい関数 transmit_data_task
+// --- 画像送信タスク ---
 fn transmit_data_task(
-    framebuffer_option: Option<FrameBuffer<'_>>,
+    framebuffer_option: &Option<FrameBuffer<'_>>,
     config: &AppConfig,
     measured_voltage_percent: u8,
     modem: Modem, // peripherals.modem を受け取る
     sysloop: EspSystemEventLoop,
-    nvs: EspDefaultNvsPartition, // Arc を解除し、直接 EspDefaultNvsPartition を受け取る
-    led: &mut StatusLed,         // ジェネリック P を削除
+    nvs: EspDefaultNvsPartition,
+    led: &mut StatusLed,
 ) -> anyhow::Result<()> {
     info!("ESP-NOW用のWiFiペリフェラルを初期化しています - STAモード");
     let mut wifi = BlockingWifi::wrap(
@@ -129,7 +127,6 @@ fn transmit_data_task(
             info!("ダミーハッシュ (と電圧情報) を送信します");
             if let Err(e) = esp_now.send(&config.receiver_mac, &hash_payload, 1000) {
                 error!("ダミーハッシュ送信エラー: {:?}", e);
-                // led.blink_error()?; // main 側で低電圧時に blink_error しているので、ここでは不要かも
                 return Err(e.into());
             } else {
                 info!("ダミーハッシュ送信成功");
@@ -158,9 +155,11 @@ fn main() -> anyhow::Result<()> {
 
     // ペリフェラルを初期化
     info!("ペリフェラルを初期化しています");
-    let peripherals_all = Peripherals::take().unwrap(); // 名前を変更して modem を分離しやすくする
+    let peripherals_all = Peripherals::take().unwrap();
+    let modem_peripheral = peripherals_all.modem;
+
     let sysloop = EspSystemEventLoop::take()?;
-    let nvs_partition = EspDefaultNvsPartition::take()?; // Arc でラップせず、直接取得
+    let nvs_partition = EspDefaultNvsPartition::take()?;
 
     // --- ADC2 を初期化 ---
     info!("ADC2を初期化しています (GPIO0)");
@@ -220,7 +219,6 @@ fn main() -> anyhow::Result<()> {
     // カメラ構成を作成
     let camera_config = camera::M5UnitCamConfig {
         frame_size: M5UnitCamConfig::from_string(&config.frame_size),
-        jpeg_quality: config.jpeg_quality, // AppConfig から読み込んだ値を使用
     };
 
     // 定期送信のためのパラメータ設定
@@ -235,19 +233,18 @@ fn main() -> anyhow::Result<()> {
     // --- メイン処理 (Deep Sleep 前の1サイクル) ---
     let loop_start_time = Instant::now(); // 処理開始時間を記録
 
-    // `peripherals_all`から `modem` を分離
-    let modem_peripheral = peripherals_all.modem;
-
     #[allow(unused_assignments)]
     // camera_controller_holder は条件によって代入されないことがあるため許可
-    if measured_voltage_percent >= LOW_VOLTAGE_THRESHOLD_PERCENT {
+    let mut camera_controller_holder: Option<CameraController> = None; // カメラコントローラーのインスタンスを保持
+
+    let framebuffer_option = if measured_voltage_percent >= LOW_VOLTAGE_THRESHOLD_PERCENT {
         info!(
             "電圧 {}% (>= {}%) は十分なため、カメラを初期化し画像をキャプチャします。",
             measured_voltage_percent, LOW_VOLTAGE_THRESHOLD_PERCENT
         );
 
         // カメラを初期化。失敗した場合は `?` により main 関数からエラーが返る。
-        let camera = CameraController::new(
+        let initialized_camera = CameraController::new(
             peripherals_all.pins.gpio27, // clock
             peripherals_all.pins.gpio32, // d0
             peripherals_all.pins.gpio35, // d1
@@ -264,91 +261,68 @@ fn main() -> anyhow::Result<()> {
             peripherals_all.pins.gpio23, // scl
             camera_config.clone(),       // 設定をクローンして渡す
         )?;
+
+        camera_controller_holder = Some(initialized_camera); // 初期化されたカメラをホルダーに格納
+
         // ホルダー内のカメラコントローラーの参照を使用する
-
-        // 露光調整のため画像を3回撮影し2枚目までは破棄する。
-        match camera.capture_image() {
-            Ok(_) => {
-                info!("画像キャプチャ成功 (破棄 1)");
-            }
-            Err(e) => {
-                error!("画像キャプチャ失敗 (破棄 1): {:?}", e);
-                led.blink_error()?;
-                // 破棄に失敗しても、最終的なキャプチャを試みる
-            }
-        }
-        // 2回目の画像を破棄
-        match camera.capture_image() {
-            Ok(_) => {
-                info!("画像キャプチャ成功 (破棄 2)");
-            }
-            Err(e) => {
-                error!("画像キャプチャ失敗 (破棄 2): {:?}", e);
-                led.blink_error()?;
-                // 破棄に失敗しても、最終的なキャプチャを試みる
-            }
-        }
-        // 3回目の画像を framebuffer_option に保存
-        match camera.capture_image() {
-            Ok(fb) => {
-                info!("画像キャプチャ成功: {} バイト", fb.data().len());
-                // この FrameBuffer は camera (camera_controller_holder 内) から借用
-                let framebuffer_option = Some(fb);
-
-                // データ送信タスクを実行
-                if let Err(e) = transmit_data_task(
-                    framebuffer_option, // framebuffer_option の参照を渡す
-                    &config,
-                    measured_voltage_percent,
-                    modem_peripheral, // modem の所有権を渡す
-                    sysloop.clone(),  // sysloop をクローンして渡す
-                    nvs_partition,    // nvs_partition の所有権を渡す (以前は nvs.clone())
-                    &mut led,
-                ) {
-                    error!("データ送信タスクでエラーが発生: {:?}", e);
-                    // エラーが発生した場合でも、最終的にスリープ処理は main の最後で行われる
+        if let Some(camera_ref) = &camera_controller_holder {
+            let current_aec_value = camera_ref.get_current_aec_value();
+            let _ = camera_ref
+                .configure_exposure(config.auto_exposure_enabled, Some(current_aec_value)); // 自動露出設定を適用
+            if let Some(warmup_frames) = config.camera_warmup_frames {
+                info!("カメラウォームアップフレーム数: {}", warmup_frames);
+                for _ in 0..warmup_frames {
+                    match camera_ref.capture_image() {
+                        Ok(_) => {
+                            info!("カメラウォームアップフレームキャプチャ成功");
+                        }
+                        Err(e) => {
+                            error!("カメラウォームアップフレームキャプチャ失敗: {:?}", e);
+                            led.blink_error()?;
+                        }
+                    }
                 }
             }
-            Err(e) => {
-                error!("画像キャプチャ失敗 (最終): {:?}", e);
-                led.blink_error()?;
 
-                // データ送信タスクを実行
-                if let Err(e) = transmit_data_task(
-                    None, // framebuffer_option の参照を渡す
-                    &config,
-                    measured_voltage_percent,
-                    modem_peripheral, // modem の所有権を渡す
-                    sysloop.clone(),  // sysloop をクローンして渡す
-                    nvs_partition,    // nvs_partition の所有権を渡す (以前は nvs.clone())
-                    &mut led,
-                ) {
-                    error!("データ送信タスクでエラーが発生: {:?}", e);
-                    // エラーが発生した場合でも、最終的にスリープ処理は main の最後で行われる
+            // 3回目の画像を framebuffer_option に保存
+            match camera_ref.capture_image() {
+                Ok(fb) => {
+                    info!("画像キャプチャ成功: {} バイト", fb.data().len());
+                    Some(fb) // この FrameBuffer は camera_ref (camera_controller_holder 内) から借用
+                }
+                Err(e) => {
+                    error!("画像キャプチャ失敗 (最終): {:?}", e);
+                    led.blink_error()?;
+                    None
                 }
             }
-        };
+        } else {
+            // camera_controller_holder に Some が代入された直後のため、通常このブロックには到達しない
+            error!("カメラコントローラーホルダーが予期せずNoneです。");
+            None
+        }
     } else {
         info!(
             "電圧が低い ({}% < {}%) ため、カメラ処理をスキップします。",
             measured_voltage_percent, LOW_VOLTAGE_THRESHOLD_PERCENT
         );
         led.blink_error()?; // 低電圧状態を示す
-
-        // データ送信タスクを実行
-        if let Err(e) = transmit_data_task(
-            None, // framebuffer_option の参照を渡す
-            &config,
-            measured_voltage_percent,
-            modem_peripheral, // modem の所有権を渡す
-            sysloop.clone(),  // sysloop をクローンして渡す
-            nvs_partition,    // nvs_partition の所有権を渡す (以前は nvs.clone())
-            &mut led,
-        ) {
-            error!("データ送信タスクでエラーが発生: {:?}", e);
-            // エラーが発生した場合でも、最終的にスリープ処理は main の最後で行われる
-        }
+        None // 画像データは None
     };
+
+    // データ送信タスクを実行
+    if let Err(e) = transmit_data_task(
+        &framebuffer_option, // framebuffer_option の参照を渡す
+        &config,
+        measured_voltage_percent,
+        modem_peripheral, // modem の所有権を渡す
+        sysloop.clone(),  // sysloop をクローンして渡す
+        nvs_partition,    // nvs_partition の所有権を渡す
+        &mut led,
+    ) {
+        error!("データ送信タスクでエラーが発生: {:?}", e);
+        // エラーが発生した場合でも、最終的にスリープ処理は main の最後で行われる
+    }
 
     // camera_controller_holder と framebuffer_option はここでスコープを抜けて drop される。
 
