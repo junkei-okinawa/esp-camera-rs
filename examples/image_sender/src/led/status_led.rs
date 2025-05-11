@@ -54,21 +54,6 @@ impl StatusLed {
             .map_err(|e| LedError::ControlFailed(format!("{:?}", e)))
     }
 
-    /// LED点滅パターンを実行します（成功表示）
-    ///
-    /// # エラー
-    ///
-    /// LED制御に失敗した場合にエラーを返します
-    pub fn blink_success(&mut self) -> Result<(), LedError> {
-        self.turn_on()?;
-        FreeRtos::delay_ms(100);
-        self.turn_off()?;
-        FreeRtos::delay_ms(100);
-        self.turn_on()?;
-        FreeRtos::delay_ms(100);
-        self.turn_off()
-    }
-
     /// LED点滅パターンを実行します（エラー表示）
     ///
     /// # エラー
@@ -82,15 +67,6 @@ impl StatusLed {
             FreeRtos::delay_ms(50);
         }
         Ok(())
-    }
-
-    /// 撮影中パターンを実行します
-    ///
-    /// # エラー
-    ///
-    /// LED制御に失敗した場合にエラーを返します
-    pub fn indicate_capture(&mut self) -> Result<(), LedError> {
-        self.turn_on()
     }
 
     /// 送信中パターンを実行します

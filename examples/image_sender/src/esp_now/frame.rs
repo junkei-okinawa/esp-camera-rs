@@ -5,9 +5,6 @@ use sha2::{Digest, Sha256};
 pub enum FrameError {
     #[error("データが空です")]
     EmptyData,
-
-    #[error("ハッシュ計算エラー: {0}")]
-    HashCalculationError(String),
 }
 
 /// 画像フレームを処理するためのユーティリティ
@@ -40,26 +37,18 @@ impl ImageFrame {
         Ok(hash_hex)
     }
 
-    /// ハッシュメッセージを準備します
+    /// ハッシュメッセージと電圧パーセンテージを準備します
     ///
     /// # 引数
     ///
     /// * `hash` - 画像データのハッシュ値
+    /// * `voltage_percent` - 測定された電圧のパーセンテージ (0-100)
     ///
     /// # 戻り値
     ///
-    /// "HASH:<hash_value>"形式のバイトベクター
-    pub fn prepare_hash_message(hash: &str) -> Vec<u8> {
-        format!("HASH:{}", hash).into_bytes()
-    }
-
-    /// EOFメッセージを準備します
-    ///
-    /// # 戻り値
-    ///
-    /// "EOF!"というバイトシーケンス
-    pub fn prepare_eof_message() -> &'static [u8] {
-        b"EOF!"
+    /// \"HASH:<hash_value>,VOLT:<voltage_percent>\"形式のバイトベクター
+    pub fn prepare_hash_message(hash: &str, voltage_percent: u8) -> Vec<u8> {
+        format!("HASH:{},VOLT:{}", hash, voltage_percent).into_bytes()
     }
 }
 
@@ -91,7 +80,8 @@ mod tests {
     #[ignore = "ESP32実機環境でStoreProhibitedエラーが発生するためスキップ"]
     fn test_prepare_hash_message() {
         let hash = "abcdef1234567890";
-        let message = ImageFrame::prepare_hash_message(hash);
-        assert_eq!(message, b"HASH:abcdef1234567890");
+        let voltage_percent = 75;
+        let message = ImageFrame::prepare_hash_message(hash, voltage_percent);
+        assert_eq!(message, b"HASH:abcdef1234567890,VOLT:75");
     }
 }

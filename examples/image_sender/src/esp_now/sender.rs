@@ -9,12 +9,13 @@ use log::error;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// ESP-NOW送信結果
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // This enum may be used in the future for more detailed send status
 pub enum SendResult {
-    /// 送信成功
-    Success,
-    /// 送信失敗
-    Failed,
+    /// 送信タイムアウト
+    Timeout,
+    /// ESP-IDFエラー
+    EspError(esp_idf_sys::EspError),
 }
 
 /// ESP-NOW送信エラー
@@ -174,7 +175,7 @@ impl EspNowSender {
     pub fn send_image_chunks(
         &self,
         peer_mac: &MacAddress,
-        data: &[u8],
+        data: Vec<u8>,
         chunk_size: usize,
         delay_between_chunks_ms: u32,
     ) -> Result<(), EspNowError> {

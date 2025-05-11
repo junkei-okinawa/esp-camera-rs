@@ -32,14 +32,6 @@ impl MacAddress {
 
         Ok(MacAddress(mac))
     }
-
-    /// ファイル向けのRust配列フォーマット文字列を生成します
-    pub fn config_rs_mac_address(&self) -> String {
-        format!(
-            "[0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:02x}]",
-            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
-        )
-    }
 }
 
 impl fmt::Display for MacAddress {
@@ -66,14 +58,5 @@ mod tests {
     fn test_mac_address_display() {
         let mac = MacAddress([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         assert_eq!(format!("{}", mac), "11:22:33:44:55:66");
-    }
-
-    #[test]
-    fn test_config_rs_mac_address() {
-        let mac = MacAddress([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        assert_eq!(
-            mac.config_rs_mac_address(),
-            "[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]"
-        );
     }
 }
