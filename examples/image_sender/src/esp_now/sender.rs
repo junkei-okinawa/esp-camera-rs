@@ -175,7 +175,7 @@ impl EspNowSender {
     pub fn send_image_chunks(
         &self,
         peer_mac: &MacAddress,
-        data: &[u8],
+        data: Vec<u8>,
         chunk_size: usize,
         delay_between_chunks_ms: u32,
     ) -> Result<(), EspNowError> {

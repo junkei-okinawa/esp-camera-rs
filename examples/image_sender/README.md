@@ -87,8 +87,71 @@
 プロジェクトをビルドして、ESP32デバイスにフラッシュするには：
 
 ```bash
-cargo espflash flash --release --port /dev/your-port --monitor
+cargo espflash flash --release --port /dev/your-port --monitor --partition-table ../partitions.csv
 ```
+
+`/dev/your-port` は、お使いの環境におけるESP32デバイスのシリアルポートに置き換えてください。
+`--partition-table ../partitions.csv` オプションにより、プロジェクトルートの一つ上の階層にある `partitions.csv` をカスタムパーティションテーブルとして使用します。これにより、アプリケーションのバイナリサイズが大きい場合に発生する "image_too_big" エラーを回避できます。
+
+## 設定 (`cfg.toml`)
+
+アプリケーションの動作は、プロジェクトのルートディレクトリ（`image_sender` ディレクトリ直下）に配置する `cfg.toml` ファイルで設定できます。
+リポジトリには `cfg.toml.template` が含まれているので、これをコピーして `cfg.toml` というファイル名で保存し、必要に応じて値を編集してください。
+
+```toml
+// cfg.toml の例
+[image-sender]
+# データ送信先のMacAddress（example/usb_cdc_receiver の受信機デバイス）
+receiver_mac = "11:22:33:44:55:66"
+
+# ディープスリープ時間（秒）
+sleep_duration_seconds = 60
+
+# 起動時刻の調整用パラメータ (オプション)
+# これらが設定されている場合、sleep_duration_seconds で指定されたおおよそのスリープ後、
+# さらに指定された分の下一桁・秒の下一桁に合致する最も近い未来の時刻まで調整して起動します。
+# 例: target_minute_last_digit = 0, target_second_last_digit = 1 の場合、
+#   おおよそ sleep_duration_seconds 後に、xx時x0分x1秒のような時刻に起動します。
+
+# 複数デバイスを運用する場合、できる限りデータ送信タイミングをズラしたいので送信タイミングをズラせるようにコメントアウトで目標設定を可能にする
+# 起動する「分」の下一桁 (0-9)。コメントアウトまたは未設定の場合はこの条件を無視。
+# target_minute_last_digit = 0
+
+# 起動する「秒」の上一桁 (0-5)。コメントアウトまたは未設定の場合はこの条件を無視。
+# target_second_last_digit = 1
+
+# ソーラーパネル電圧がゼロになった場合（日没）次の実行までDeepSleepする時間（秒）
+sleep_duration_seconds_for_long = 3600
+
+# カメラ解像度（SVGA = 800*600）
+frame_size = "SVGA"
+# 利用可能な値の例 (詳細は esp-idf-sys のドキュメントを参照):
+# "96X96", "QQVGA", "QCIF", "HQVGA", "240X240", "QVGA", "CIF", "HVGA", "VGA", "SVGA",
+# "XGA", "HD", "SXGA", "UXGA", "FHD", "P_HD", "P_3MP", "QXGA", "QHD", "WQXGA", "P_FHD", "QSXGA"
+
+# カメラの自動露光調整のON/OFF
+auto_exposure_enabled = true
+
+# カメラ撮影画像品質を安定させるために捨て画像撮影回数
+camera_warmup_frames = 2
+
+# タイムゾーン (例: "Asia/Tokyo", "America/New_York")
+# 有効なタイムゾーン文字列は chrono-tz クレートのドキュメントを参照してください。
+timezone = "Asia/Tokyo"
+```
+
+### 設定可能な項目
+
+-   `receiver_mac`: (必須) データ送信先のESP-NOW受信側デバイスのMACアドレス。
+-   `sleep_duration_seconds`: (必須) 通常のディープスリープ時間（秒）。
+-   `target_minute_last_digit`: (オプション) 起動する「分」の下一桁 (0-9)。コメントアウトまたは未設定の場合はこの条件を無視します。
+-   `target_second_last_digit`: (オプション) 起動する「秒」の上一桁 (0-5)。コメントアウトまたは未設定の場合はこの条件を無視します。
+    -   `target_minute_last_digit` と `target_second_last_digit` が両方設定されている場合、`sleep_duration_seconds` で指定されたおおよそのスリープ後、さらに指定された分の下一桁・秒の下一桁に合致する最も近い未来の時刻まで起動を遅延させます。
+-   `sleep_duration_seconds_for_long`: (必須) ソーラーパネル電圧がゼロになった場合（日没と判断される場合）など、長期間スリープする場合のディープスリープ時間（秒）。
+-   `frame_size`: (必須) カメラの解像度。例: `"SVGA"`, `"QVGA"`, `"HD"` など。利用可能な値の完全なリストは `esp-idf-sys` のドキュメントを参照してください。
+-   `auto_exposure_enabled`: (必須) カメラの自動露光調整を有効にするか (`true` または `false`)。
+-   `camera_warmup_frames`: (必須) カメラ起動時に撮影する捨て画像の枚数。画質安定化のために使用します。
+-   `timezone`: (必須) タイムゾーンを指定する文字列。例: `"Asia/Tokyo"`, `"America/New_York"`。有効なタイムゾーン文字列については、`chrono-tz` クレートから参照されている[List of tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)のドキュメントを参照してください。時刻同期 (`sntp`) が有効な場合に参照されます。
 
 ## テスト
 
@@ -114,6 +177,12 @@ cargo test --lib --target xtensa-esp32-espidf
 - esp_now/frame: ハッシュ計算やメッセージ準備のテスト
 - camera: カメラ制御のテスト（ハードウェア依存）
 - led: LEDパターン制御のテスト（ハードウェア依存）
+
+## テストに関する注意点
+
+現在、ESP32実機上で一部の単体テストを実行（`cargo test --lib --target xtensa-esp32-espidf`）しようとすると、デバイスのスタックサイズ制限によりエラーが発生する場合があります。この問題は今後の課題として認識しており、解決に向けて調査中です。
+
+ホストOS（PC）上でのテストは、ESP-IDFへの依存関係により現状では困難です。今後のリファクタリングでESP-IDF非依存モジュールをテスト可能にするしていきたいと考えています。
 
 ## モジュール解説
 

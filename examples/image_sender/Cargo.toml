@@ -16,6 +16,11 @@ path = "src/lib.rs"
 
 [profile.release]
 opt-level = "s"
+# opt-level = "z"      # "s" から "z" に変更 (サイズをさらに積極的に最適化)
+# lto = true             # Link Time Optimization を有効化
+# codegen-units = 1      # 並列コンパイルユニット数を1に (より積極的な最適化の可能性)
+# panic = "abort"        # パニック時にスタックトレースを生成しない
+# strip = true           # デバッグシンボルを削除
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash
@@ -30,6 +35,8 @@ esp-idf-sys = "0.36"
 embedded-svc = "0.28"
 sha2 = "0.10"
 thiserror = "2.0.12"
+chrono = "0.4.41"
+chrono-tz = "0.10.3"
 
 # esp-camera-rs = { git = "https://github.com/junkei-okinawa/esp-camera-rs.git" }
 # Uncomment next string to use local version of the lib.
