@@ -1,4 +1,5 @@
 import os
+import io
 import time
 import asyncio
 import serial_asyncio
@@ -6,6 +7,8 @@ import serial
 from datetime import datetime
 import logging  # Ensure logging is imported
 import argparse
+
+from PIL import Image
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -110,6 +113,19 @@ def write_file_sync(filename, data):
     with open(filename, "wb") as f:
         f.write(data)
 
+    # 回転画像保存
+    try:
+        # バイト列から Image オブジェクト生成
+        im = Image.open(io.BytesIO(data))
+        # 左90度回転
+        rotated = im.rotate(90, expand=True)
+        # ファイル名から MAC 部分だけ取り出し
+        base = os.path.splitext(os.path.basename(filename))[0].split("_")[0]
+        rotated_filename = os.path.join(IMAGE_DIR, f"{base}.jpg")
+        rotated.save(rotated_filename)
+        logger.info(f"Saved rotated image: {rotated_filename}")
+    except Exception as e:
+        logger.error(f"Error saving rotated image: {e}")
 
 # --- Serial Protocol Class ---
 class SerialProtocol(asyncio.Protocol):
@@ -292,20 +308,23 @@ class SerialProtocol(asyncio.Protocol):
                     try:
                         # HASHフレームのペイロードの先頭5バイトは 'HASH:' なのでスキップ
                         payload_str = chunk_data[5:].decode('ascii')
+                        # payload_str の内容 "<hash>,VOLT:<u8>,<timestamp>"
+                        # <timestamp>は image_sender で画像取得タイミングのRTCタイムスタンプなのでズレている可能性が高い。ログ確認のために受信している。
                         logger.info(f"Received HASH frame from {sender_mac}: {payload_str}")
+                        payload_splet = payload_str.split(",")
+                        if len(payload_splet) < 2: 
+                            logger.warning(f"Invalid HASH payload format from {sender_mac}: {payload_str}")
+                            return
+                        # hash_value = payload_splet[0]  # HASH値自体はここでは不要
+                        volt_log_entry = payload_splet[1]
+                        # timestamp_str = payload_splet[2]  # タイムスタンプは受信しているが、画像取得タイミングのRTCタイムスタンプなのでズレている可能性が高い
 
                         # 電圧情報を抽出
-                        if ",VOLT:" in payload_str:
-                            parts = payload_str.split(",VOLT:")
-                            # hash_value = parts[0] # HASH値自体はここでは不要
-                            volt_value = parts[1]
-                            timestamp_volt = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] # ミリ秒まで、区切りをピリオドに変更
-                            volt_log_entry = f"{timestamp_volt},{sender_mac},{volt_value}\n" # 改行文字を修正
-                            try:
-                                with open(VOLT_LOG_FILE, "a") as vf:
-                                    vf.write(volt_log_entry)
-                            except Exception as e:
-                                logger.error(f"Error writing to volt.log: {e}")
+                        if "VOLT:" in volt_log_entry:
+                            volt_value = volt_log_entry.replace("VOLT:", "")
+                            if not volt_value.isdigit():
+                                logger.warning(f"Invalid VOLT value from {sender_mac}: {volt_value}")
+                                return
 
                             if volt_value != "100": # 100%の時は初回起動またはデバッグ時のため記録しない
                                 try:
