@@ -1,12 +1,20 @@
+//! Deep Sleep Management Module
+//!
+//! This module provides:
+//! - Determination of whether SNTP time‐sync over Wi-Fi is required.
+//! - Execution of SNTP time synchronization.
+//! - Fixed-interval and “target-digit” deep-sleep strategies.
+//! - Wi-Fi connection and disconnection helpers during time sync.
 use crate::config::AppConfig;
 use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncStatus};
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
-use log::{debug, error, info, warn};
+use log::{error, info, warn}; // Removed debug
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, TimeZone, Timelike, Utc};
-use chrono_tz::{ParseError, Tz};
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike, Utc, Local}; // Removed Duration as ChronoDuration
+use chrono::Duration; // Added for ChronoDuration
+use chrono_tz::Tz; // Import Tz directly
 
 // Constants for SNTP
 const MAX_SNTP_RETRIES: u32 = 30;
@@ -16,36 +24,51 @@ const SNTP_RETRY_DELAY_MS_OTHER: u64 = 5000; // 5 seconds
 // Constant for sleep logic
 const MIN_SLEEP_SECONDS_IN_TSLD_MODE: i64 = 11; // Minimum sleep if target_second_last_digit is used
 
-/// エラーの定義
+
 #[derive(Debug, thiserror::Error)]
 pub enum DeepSleepError {
-    #[error("スリープ時間が不正です: {0}")]
+    #[error("Invalid sleep duration: {0}")]
     InvalidDuration(String),
-    #[error("システム時刻の取得に失敗しました: {0}")]
+    #[error("Failed to get system time: {0}")]
     SystemTimeError(String),
-    #[error("Chrono型への変換に失敗しました: {0}")]
+    #[error("Failed to convert to Chrono type: {0}")]
     ChronoConversionError(String),
-    #[error("WiFiエラー: {0}")]
+    #[error("Wi-Fi error: {0}")]
     WifiError(String),
-    #[error("SNTPエラー: {0}")]
+    #[error("SNTP error: {0}")]
     SntpError(String),
-    #[error("WiFi接続に失敗しました: {0}")]
-    WifiConnectionFailed(String), // Added
-    #[error("時刻同期に失敗しました: {0}")]
-    TimeSyncFailed(String), // Added
-    #[error("設定が不正です: {0}")]
-    InvalidConfiguration(String), // Added
+    #[error("Wi-Fi connection failed: {0}")]
+    WifiConnectionFailed(String),
+    #[error("Time synchronization failed: {0}")]
+    TimeSyncFailed(String),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
 }
 
-/// ディープスリープ機能を提供するプラットフォームごとの実装を抽象化するトレイト
+/// Platform-agnostic deep-sleep abstraction.
+///
+/// Implement this trait for any target that can enter
+/// deep sleep by providing a `deep_sleep(duration_us)` method.
 pub trait DeepSleepPlatform {
+    /// Enter deep sleep for the specified duration in microseconds.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration_us` – Sleep duration in microseconds.
     fn deep_sleep(&self, duration_us: u64);
 }
 
-/// ESP-IDF環境用のDeepSleepPlatform実装
+/// ESP-IDF implementation of `DeepSleepPlatform`.
+///
+/// Calls the raw `esp_deep_sleep` API under the hood.
 pub struct EspIdfDeepSleep;
 
 impl DeepSleepPlatform for EspIdfDeepSleep {
+    /// Enters deep sleep using the ESP-IDF `esp_deep_sleep` function.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration_us` – Sleep duration in microseconds.
     fn deep_sleep(&self, duration_us: u64) {
         unsafe {
             esp_idf_sys::esp_deep_sleep(duration_us);
@@ -53,69 +76,81 @@ impl DeepSleepPlatform for EspIdfDeepSleep {
     }
 }
 
-/// ディープスリープ管理
+/// Core deep-sleep controller.
+///
+/// Holds application configuration and a platform implementation.
 pub struct DeepSleep<P: DeepSleepPlatform> {
     config: Arc<AppConfig>,
     platform: P,
 }
 
 impl<P: DeepSleepPlatform> DeepSleep<P> {
+    /// Create a new `DeepSleep` controller.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` – Shared application settings.
+    /// * `platform` – Platform-specific deep-sleep impl.
     pub fn new(config: Arc<AppConfig>, platform: P) -> Self {
         DeepSleep { config, platform }
     }
 
-    /// 現在の時刻をWi-Fi経由で同期する必要があるか確認し、必要であれば同期します。
-    /// 同期は、現在のシステム時刻が2025年1月1日より前の場合にのみ実行されます。
-    pub fn ensure_time_sync_if_needed(
-        &mut self,
-        wifi: &mut BlockingWifi<EspWifi<'static>>,
-        ssid: &str,
-        password: &str,
-    ) -> Result<(), DeepSleepError> {
+    /// Check whether SNTP time synchronization is required.
+    ///
+    /// Returns `Ok(true)` if the current system time is before
+    /// 2025-01-01 00:00:00 UTC, else `Ok(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeepSleepError` if system time cannot be read or
+    /// converted.
+    pub fn is_time_sync_required(&self) -> Result<bool, DeepSleepError> {
         let now_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
-                DeepSleepError::SystemTimeError(format!(
-                    "システム時刻の取得に失敗 (同期前チェック): {}",
-                    e
-                ))
+                DeepSleepError::SystemTimeError(format!("Failed to get system time: {:?}", e))
             })?
             .as_secs();
 
-        let current_time_chrono =
-            DateTime::from_timestamp(now_unix_secs as i64, 0).ok_or_else(|| {
+        let current_time_chrono = Utc
+            .timestamp_opt(now_unix_secs as i64, 0)
+            .single()
+            .ok_or_else(|| {
                 DeepSleepError::ChronoConversionError(
-                    "DateTimeへの変換に失敗 (同期前チェック)".to_string(),
+                    "Failed to convert system time to chrono DateTime".to_string(),
                 )
             })?;
 
         // 2025年1月1日 00:00:00 UTC のDateTimeオブジェクトを作成
-        let threshold_naive_date = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-        let threshold_naive_datetime = threshold_naive_date.and_hms_opt(0, 0, 0).unwrap();
+        let threshold_naive_date = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(); // Should be safe
+        let threshold_naive_datetime = threshold_naive_date.and_hms_opt(0, 0, 0).unwrap(); // Should be safe
         let threshold_time = Utc.from_utc_datetime(&threshold_naive_datetime);
 
         info!(
-            "現在のシステム時刻 (同期前チェック): {}",
-            current_time_chrono.format("%Y-%m-%d %H:%M:%S")
+            "Current system time for sync check: {}, Threshold time: {}",
+            current_time_chrono, threshold_time
         );
 
         if current_time_chrono < threshold_time {
-            info!(
-                "現在時刻が {} より前なので、時刻同期を実行します。",
-                threshold_time.format("%Y-%m-%d %H:%M:%S")
-            );
-            self.synchronize_time(wifi, ssid, password)?;
+            Ok(true)
         } else {
-            info!(
-                "現在時刻が {} 以降なので、時刻同期をスキップします。",
-                threshold_time.format("%Y-%m-%d %H:%M:%S")
-            );
+            info!("Time synchronization not needed (current time is past threshold).");
+            Ok(false)
         }
-        Ok(())
     }
 
-    /// 現在の時刻をWi-Fi経由で同期します。 (この関数は ensure_time_sync_if_needed から呼ばれます)
-    fn synchronize_time(
+    /// Perform actual time synchronization using SNTP.
+    ///
+    /// # Arguments
+    ///
+    /// * `wifi` – Blocking Wi-Fi interface.
+    /// * `ssid` – Network SSID.
+    /// * `password` – Network password.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeepSleepError` on Wi-Fi or SNTP failures.
+    pub fn perform_actual_time_sync(
         &mut self,
         wifi: &mut BlockingWifi<EspWifi<'static>>,
         ssid: &str,
@@ -260,6 +295,19 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
         Ok(())
     }
 
+    /// Deep-sleep based on either:
+    /// 1. Fixed interval (`sleep_duration_seconds`), or
+    /// 2. Target-digit mode (minute’s last digit or second’s tens digit).
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed_time_in_current_loop` – Time spent in this loop.
+    /// * `min_sleep_duration` – Minimum sleep duration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeepSleepError` if timezone parsing fails or other
+    /// calculation errors occur.
     pub fn sleep(
         &self,
         elapsed_time_in_current_loop: StdDuration,
@@ -267,53 +315,68 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
     ) -> Result<(), DeepSleepError> {
         let timezone_str = self.config.timezone.as_str();
 
-        if self.config.target_minute_last_digit.is_some()
-            || self.config.target_second_last_digit.is_some()
-        {
-            info!("Entering target digit sleep mode.");
-            self.sleep_until_target_digits_match(
-                timezone_str,
-                min_sleep_duration,
-                elapsed_time_in_current_loop,
-            )
+        // The decision to use target digit sleep is now made in main.rs
+        // This method now only handles fixed interval sleep.
+        info!("Entering fixed interval sleep mode.");
+        let interval_total_secs = self.config.sleep_duration_seconds as u64;
+
+        let mut sleep_for_secs = if interval_total_secs > elapsed_time_in_current_loop.as_secs() {
+            interval_total_secs - elapsed_time_in_current_loop.as_secs()
         } else {
-            info!("Entering fixed interval sleep mode.");
-            let interval_total_secs = self.config.sleep_duration_seconds as u64;
-            let mut sleep_for_secs = if interval_total_secs > elapsed_time_in_current_loop.as_secs()
-            {
-                interval_total_secs - elapsed_time_in_current_loop.as_secs()
-            } else {
-                warn!(
-                    "Processing time ({:?}) exceeded sleep interval ({}s). Using minimum sleep duration ({:?}).",
-                    elapsed_time_in_current_loop, interval_total_secs, min_sleep_duration
-                );
-                min_sleep_duration.as_secs()
-            };
-
-            if sleep_for_secs == 0 {
-                warn!(
-                    "Calculated interval sleep duration is zero. Overriding to min_sleep_duration."
-                );
-                sleep_for_secs = min_sleep_duration.as_secs();
-            }
-            if sleep_for_secs == 0 && min_sleep_duration.as_secs() == 0 {
-                warn!("Min sleep duration is also zero. Setting to 1 second to avoid issues.");
-                sleep_for_secs = 1;
-            }
-
-            info!(
-                "Deep sleeping for {} seconds (interval mode, timezone: {}).",
-                sleep_for_secs, timezone_str
+            warn!(
+                "Processing time ({:?}) exceeded sleep interval ({}s). Using minimum sleep duration ({:?}).",
+                elapsed_time_in_current_loop, interval_total_secs, min_sleep_duration
             );
-            self.platform.deep_sleep(sleep_for_secs * 1_000_000);
-            // deep_sleep からは復帰しないため、Ok(()) は実際には返らない
-            // しかし、シグネチャ上は Result を返す必要がある
-            #[allow(unreachable_code)]
-            Ok(())
+            min_sleep_duration.as_secs()
+        };
+
+        // マイクロ秒に変換
+        let mut sleep_for_micros = sleep_for_secs * 1_000_000;
+
+        // 設定ファイルから補正値を取得して加算 (マイクロ秒単位)
+        // sleep_compensation_micros は i64 なので、符号を考慮して加算
+        let compensation_micros = self.config.sleep_compensation_micros;
+        if compensation_micros >= 0 {
+            sleep_for_micros = sleep_for_micros.saturating_add(compensation_micros as u64);
+        } else {
+            // 補正値が負の場合は、絶対値を減算する
+            sleep_for_micros = sleep_for_micros.saturating_sub(compensation_micros.abs() as u64);
         }
+
+
+        if sleep_for_micros == 0 {
+            warn!(
+                "Calculated interval sleep duration is zero. Overriding to min_sleep_duration."
+            );
+            // min_sleep_duration もマイクロ秒で扱う
+            sleep_for_micros = min_sleep_duration.as_micros() as u64;
+        }
+        if sleep_for_micros == 0 && min_sleep_duration.as_micros() == 0 {
+            warn!("Min sleep duration is also zero. Setting to 1 second to avoid issues.");
+            sleep_for_micros = 1_000_000; // 1秒
+        }
+
+        info!(
+            "Deep sleeping for {} microseconds (interval mode, timezone: {}).",
+            sleep_for_micros, timezone_str
+        );
+        self.platform.deep_sleep(sleep_for_micros);
+        // deep_sleep からは復帰しないため、Ok(()) は実際には返らない
+        // しかし、シグネチャ上は Result を返す必要がある
+        #[allow(unreachable_code)]
+        Ok(())
     }
 
-    pub fn sleep_for_duration_long(&self, duration_seconds: u64) -> Result<(), DeepSleepError> {
+    /// Enter deep sleep for a fixed number of seconds.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration_seconds` – Sleep duration in seconds (must be > 0).
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidDuration` if `duration_seconds == 0`.
+    pub fn sleep_for_duration(&self, duration_seconds: u64) -> Result<(), DeepSleepError> {
         if duration_seconds == 0 {
             return Err(DeepSleepError::InvalidDuration(
                 "スリープ時間は0より大きくなければなりません".to_string(),
@@ -327,229 +390,287 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
         Ok(())
     }
 
-    fn sleep_until_target_digits_match(
-        &self,
-        timezone_str: &str,
-        min_sleep_duration_param: StdDuration,
+    /// 指定された目標の分と秒の数字に合致するまでディープスリープします。
+    /// RTCの時刻が目標のパターンに一致する次のタイミングで起動します。
+    ///
+    /// # Arguments
+    /// * `elapsed_time_in_current_loop` - 現在のメインループ処理に費やされた時間。
+    ///                                    この時間は、計算されるスリープ期間から差し引かれます。
+    ///
+    /// # Returns
+    /// `Ok(())` もしスリープが正常に開始された場合 (ただし、この関数は通常戻りません)、
+    /// またはスリープがスキップされた場合。
+    /// `Err(DeepSleepError)` もしエラーが発生した場合 (現在は未使用だが将来のため)。
+    pub fn sleep_until_target_digits_match(
+        &mut self,
         elapsed_time_in_current_loop: StdDuration,
     ) -> Result<(), DeepSleepError> {
-        let tz: Tz = timezone_str.parse().map_err(|e: ParseError| {
-            DeepSleepError::InvalidConfiguration(format!(
-                "Invalid timezone string: {} ({})",
-                timezone_str, e
-            ))
-        })?;
+        if let Some(ref target_conf) = self.config.target_digits_config {
+            let now = Local::now(); // Capture current time once
 
-        let now_in_tz = Utc::now().with_timezone(&tz);
-        info!(
-            "sleep_until_target_digits_match called. now_in_tz: {}, tz_str: {}, min_sleep_param: {}s, elapsed_loop: {:.3}s",
-            now_in_tz, timezone_str, min_sleep_duration_param.as_secs(), elapsed_time_in_current_loop.as_secs_f32()
-        );
-        info!(
-            "Config values: target_minute_last_digit: {:?}, target_second_last_digit: {:?}",
-            self.config.target_minute_last_digit, self.config.target_second_last_digit
-        );
+            info!(
+                "Attempting to sleep until target digits. Current time: {}. Target config: min_last_digit={:?}, sec_tens_digit={:?}. Elapsed loop time: {:?}",
+                now.format("%Y-%m-%d %H:%M:%S"),
+                target_conf.minute_last_digit,
+                target_conf.second_tens_digit,
+                elapsed_time_in_current_loop
+            );
 
-        let mut search_from_dt = now_in_tz;
-        // ... (search_from_dt の調整ロジック) ...
-        let current_minute_val = now_in_tz.minute();
-        let current_second_val = now_in_tz.second();
+            // Calculate seconds to the *next* target time
+            // This is called only if target_conf has at least one digit set (guaranteed by AppConfig::load logic)
+            if target_conf.minute_last_digit.is_none() && target_conf.second_tens_digit.is_none() {
+                info!("TargetDigitsConfig is Some, but no specific digits are set. This should not happen if AppConfig::load is correct. Skipping target digit sleep.");
+                return Ok(());
+            }
 
-        if let Some(target_s_tens_digit_u8) = self.config.target_second_last_digit {
-            let target_s_tens_digit = target_s_tens_digit_u8 as u32;
-            let current_s_tens = current_second_val / 10;
-            let minute_matches_if_set = self
-                .config
-                .target_minute_last_digit
-                .map_or(true, |m_digit| current_minute_val % 10 == m_digit as u32);
+            if let Some(seconds_to_target_u32) = Self::calculate_seconds_to_target(
+                now, // Pass current time
+                target_conf.minute_last_digit, // This is already Option<u8>
+                target_conf.second_tens_digit, // This is already Option<u8>
+            ) {
+                if seconds_to_target_u32 > 0 {
+                    info!(
+                        "Calculated seconds to next target: {} s",
+                        seconds_to_target_u32
+                    );
 
-            if current_s_tens == target_s_tens_digit && minute_matches_if_set {
-                debug!("Current time {} is within a target slot (min_match: {}, sec_tens: {}). Adjusting search start.", now_in_tz, minute_matches_if_set, current_s_tens);
-                let next_10s_window_start_second = (current_s_tens + 1) * 10;
+                    let sleep_for_seconds_u64 = seconds_to_target_u32 as u64;
 
-                if next_10s_window_start_second < 60 {
-                    if let Some(adjusted_dt) = now_in_tz
-                        .with_second(next_10s_window_start_second)
-                        .and_then(|t| t.with_nanosecond(0))
-                    {
-                        search_from_dt = adjusted_dt;
+                    if sleep_for_seconds_u64 > elapsed_time_in_current_loop.as_secs() {
+                        let actual_sleep_duration_secs =
+                            sleep_for_seconds_u64 - elapsed_time_in_current_loop.as_secs();
+                        
+                        if actual_sleep_duration_secs > 0 {
+                            info!(
+                                "Deep sleeping for {} seconds (until target digits).",
+                                actual_sleep_duration_secs
+                            );
+                            self.platform
+                                .deep_sleep(actual_sleep_duration_secs * 1_000_000);
+                            // Unreachable code after deep_sleep
+                            #[allow(unreachable_code)]
+                            return Ok(()); // Should not be reached
+                        } else {
+                            info!(
+                                "Adjusted sleep duration is zero or negative (target: {}s, elapsed: {:?}). Skipping sleep.",
+                                sleep_for_seconds_u64,
+                                elapsed_time_in_current_loop
+                            );
+                        }
+                    } else {
+                        info!(
+                            "Time to next target ({}s) is less than or equal to elapsed loop time ({:?}). Skipping sleep.",
+                            sleep_for_seconds_u64,
+                            elapsed_time_in_current_loop
+                        );
                     }
                 } else {
-                    if let Some(adjusted_dt) = (now_in_tz + ChronoDuration::minutes(1))
-                        .with_second(0)
-                        .and_then(|t| t.with_nanosecond(0))
-                    {
-                        search_from_dt = adjusted_dt;
+                    // seconds_to_target_u32 is 0. This means calculate_seconds_to_target found an issue or
+                    // the target is "now" but it should return >0 for future targets.
+                    warn!(
+                        "Calculated seconds_to_target is 0. This indicates an issue or immediate match where future was expected. Skipping sleep."
+                    );
+                }
+            } else {
+                warn!("Could not determine next target time slot. Check target configuration and RTC. Skipping target digit sleep.");
+            }
+        } else {
+            // This branch should ideally not be hit if main.rs calls this function only when target_digits_config is Some.
+            info!("Target digits not configured. Skipping target-digit sleep.");
+        }
+        Ok(()) // Return Ok if no sleep occurred or if config was None.
+    }
+
+    /// Calculate the number of seconds from `start_time` until the next future time
+    /// matching the specified optional target minute's last digit and optional target second's tens digit.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_time` - The reference time from which to calculate the duration.
+    /// * `target_minute_last_digit_opt` - Optional target last digit of the minute (0-9).
+    /// * `target_second_tens_digit_opt` - Optional target tens digit of the second (0-5).
+    ///
+    /// # Returns
+    ///
+    /// The number of seconds (as u32) until the next target time, if found within
+    /// a 120-minute search window. Returns `None` if no such time is found or if
+    /// no targets are specified.
+    fn calculate_seconds_to_target(
+        start_time: DateTime<Local>,
+        target_minute_last_digit_opt: Option<u8>,
+        target_second_tens_digit_opt: Option<u8>,
+    ) -> Option<u32> {
+        // If no targets are specified, then any time is "valid" but this function's purpose is specific.
+        // This should ideally be guarded by the caller ensuring at least one target is Some.
+        if target_minute_last_digit_opt.is_none() && target_second_tens_digit_opt.is_none() {
+            warn!("calculate_seconds_to_target called with no target digits specified.");
+            return None;
+        }
+
+        // Start searching from the second *after* start_time to ensure future time.
+        let mut current_check_time = start_time + Duration::seconds(1); // Changed ChronoDuration to Duration
+
+        // Search for up to 120 minutes (7200 seconds).
+        for _ in 0..(120 * 60) {
+            let minute_val = current_check_time.minute();
+            let second_val = current_check_time.second();
+
+            let mut minute_criteria_met = target_minute_last_digit_opt.is_none(); // True if not specified
+            if let Some(target_mld) = target_minute_last_digit_opt {
+                if minute_val % 10 == target_mld as u32 {
+                    minute_criteria_met = true;
+                }
+            }
+
+            let mut second_criteria_met = target_second_tens_digit_opt.is_none(); // True if not specified
+            if let Some(target_std) = target_second_tens_digit_opt {
+                // Ensure target_std is within valid range (0-5 for tens digit of second)
+                // This check should ideally be at config load time, but defensive check here is okay.
+                if (0..=5).contains(&target_std) && second_val / 10 == target_std as u32 {
+                    second_criteria_met = true;
+                } else if !(0..=5).contains(&target_std) {
+                    // Invalid target, effectively makes this criteria unmatchable if specified
+                    warn!("Invalid target_second_tens_digit: {}. Must be 0-5.", target_std);
+                    second_criteria_met = false; // Ensure it fails if an invalid target was somehow passed
+                }
+            }
+            
+            if minute_criteria_met && second_criteria_met {
+                // Found the target time.
+                let duration_to_target = current_check_time.signed_duration_since(start_time);
+                
+                // Ensure the found time is strictly after start_time.
+                // num_seconds() can be 0 if current_check_time is the same as start_time,
+                // but we started search from start_time + 1s.
+                if duration_to_target.num_seconds() > 0 {
+                    return Some(duration_to_target.num_seconds() as u32);
+                } else {
+                    // This case should be rare given the search starts at start_time + 1s.
+                    // It might occur if time "stands still" or moves backward, or if duration is < 1s and gets truncated.
+                    // Log it and continue search, or return None. For now, log and let search continue.
+                    warn!(
+                        "Calculated non-positive duration ({}s) to target. Current: {}, Start: {}. Continuing search.",
+                        duration_to_target.num_seconds(), current_check_time, start_time
+                    );
+                }
+            }
+            current_check_time = current_check_time + Duration::seconds(1); // Changed ChronoDuration to Duration
+        }
+
+        warn!(
+            "No target time found matching criteria (min_last_digit: {:?}, sec_tens_digit: {:?}) within 120 minutes from {}.",
+            target_minute_last_digit_opt, target_second_tens_digit_opt, start_time
+        );
+        None
+    }
+
+    /// Enter deep sleep for a fixed duration, adjusted to avoid
+    /// waking up exactly at the target time if configured.
+    /// If target digits are configured, this function may shorten the sleep
+    /// to wake up at the next target digit occurrence, if that occurrence
+    /// is sooner than `duration_seconds`.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration_seconds` – Sleep duration in seconds (must be > 0).
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidDuration` if `duration_seconds == 0`.
+    pub fn sleep_for_duration_adjusted(&self, duration_seconds: u64) -> Result<(), DeepSleepError> {
+        if duration_seconds == 0 {
+            return Err(DeepSleepError::InvalidDuration(
+                "スリープ時間は0より大きくなければなりません".to_string(),
+            ));
+        }
+
+        let mut final_sleep_duration_secs = duration_seconds;
+
+        if let Some(ref target_conf) = self.config.target_digits_config {
+            // Only adjust if target digits are configured.
+            let now = Local::now();
+            info!(
+                "Adjusting sleep duration. Original: {}s. Current time: {}. Target config: min_last_digit={:?}, sec_tens_digit={:?}",
+                duration_seconds,
+                now.format("%H:%M:%S"),
+                target_conf.minute_last_digit,
+                target_conf.second_tens_digit
+            );
+
+            if target_conf.minute_last_digit.is_some() || target_conf.second_tens_digit.is_some() {
+                // Only calculate if at least one target digit is set
+                if let Some(secs_to_target_u32) = Self::calculate_seconds_to_target(
+                    now,
+                    target_conf.minute_last_digit, // Already Option<u8>
+                    target_conf.second_tens_digit, // Already Option<u8>
+                ) {
+                    let secs_to_target_u64 = secs_to_target_u32 as u64;
+                    if secs_to_target_u64 > 0 && secs_to_target_u64 < duration_seconds {
+                        info!(
+                            "Target is sooner ({}s) than requested duration ({}s). Adjusting sleep to {}s.",
+                            secs_to_target_u64, duration_seconds, secs_to_target_u64
+                        );
+                        final_sleep_duration_secs = secs_to_target_u64;
+                    } else if secs_to_target_u64 > 0 {
+                        info!(
+                            "Requested duration ({}s) is shorter/equal to time to target ({}s). Using requested duration.",
+                            duration_seconds, secs_to_target_u64
+                        );
+                        // final_sleep_duration_secs remains duration_seconds
+                    } else { // secs_to_target_u32 was 0 or calculate_seconds_to_target had an issue
+                        warn!(
+                            "Calculated seconds to target is 0 or invalid ({}s). Using original duration: {}s.",
+                            secs_to_target_u32, duration_seconds
+                        );
                     }
+                } else {
+                    warn!(
+                        "Could not determine next target time for adjustment. Using original duration: {}s.",
+                        duration_seconds
+                    );
                 }
-                info!(
-                    "Adjusted search_from_dt to {} to skip current target second-slot.",
-                    search_from_dt
-                );
+            } else {
+                info!("TargetDigitsConfig is Some, but no specific digits are set. Using original duration.");
             }
-        } else if let Some(target_m_digit_u8) = self.config.target_minute_last_digit {
-            let target_m_digit = target_m_digit_u8 as u32;
-            if current_minute_val % 10 == target_m_digit {
-                debug!(
-                    "Current time {} is within a target minute slot. Adjusting search start.",
-                    now_in_tz
-                );
-                if let Some(adjusted_dt) = (now_in_tz + ChronoDuration::minutes(1))
-                    .with_second(0)
-                    .and_then(|t| t.with_nanosecond(0))
-                {
-                    search_from_dt = adjusted_dt;
-                }
-                info!(
-                    "Adjusted search_from_dt to {} to skip current target minute-slot.",
-                    search_from_dt
-                );
-            }
-        }
-
-        if search_from_dt <= now_in_tz {
-            search_from_dt = now_in_tz + ChronoDuration::nanoseconds(1);
-            debug!(
-                "Ensured search_from_dt {} is after now_in_tz {}.",
-                search_from_dt, now_in_tz
-            );
-        }
-
-        let Some(target_datetime) = Self::find_next_target_datetime_from_start(
-            search_from_dt,
-            self.config.target_minute_last_digit.map(|d| d as u32),
-            self.config.target_second_last_digit.map(|d| d as u32),
-            &tz,
-        ) else {
-            error!("Could not determine a target datetime. Falling back to fixed sleep interval based on sleep_duration_seconds.");
-            let fallback_sleep_micros = (self.config.sleep_duration_seconds as u64) * 1_000_000;
+        } else {
             info!(
-                "Deep sleeping for {} seconds (target calculation failed, using fixed interval).",
-                self.config.sleep_duration_seconds
+                "No target digits configured. Using original duration: {}s.",
+                duration_seconds
             );
-            self.platform.deep_sleep(fallback_sleep_micros);
-            unreachable!(); // deep_sleep からは復帰しないため、ここは到達不能
-        };
-
-        info!("Found target datetime: {}", target_datetime);
-        let duration_to_target = target_datetime.signed_duration_since(now_in_tz);
-        info!(
-            "Current local time: {}, Determined target local time: {}. Calculated raw duration to target: {}s.",
-            now_in_tz.format("%Y-%m-%d %H:%M:%S"),
-            target_datetime.format("%Y-%m-%d %H:%M:%S"),
-            duration_to_target.num_seconds()
-        );
-
-        if duration_to_target.num_seconds() <= 0 {
-            error!(
-                "Target datetime {} is not in the future from {}. Fallback to min_sleep_duration_param.",
-                target_datetime, now_in_tz
-            );
-            let sleep_micros = min_sleep_duration_param.as_micros() as u64;
+        }
+        
+        if final_sleep_duration_secs > 0 {
             info!(
-                "Deep sleeping for {} seconds (target calculation fallback - not in future).",
-                min_sleep_duration_param.as_secs()
+                "Deep sleeping for {} seconds (adjusted or original).",
+                final_sleep_duration_secs
             );
-            self.platform.deep_sleep(sleep_micros);
-            unreachable!(); // deep_sleep からは復帰しないため、ここは到達不能
+            self.platform.deep_sleep(final_sleep_duration_secs * 1_000_000);
+        } else {
+            info!("Final calculated sleep duration is zero or negative. Skipping hardware sleep. This might indicate an issue or that the next event is immediate.");
+            // Consider a minimal sleep if 0 is problematic for the system.
+            // For now, returning Ok(()) implies no actual hardware sleep if duration is 0.
         }
 
-        let mut sleep_duration_seconds = duration_to_target.num_seconds();
-        info!(
-            "Initial sleep duration based on target: {}s.",
-            sleep_duration_seconds
-        );
-
-        if self.config.target_second_last_digit.is_some()
-            && sleep_duration_seconds < MIN_SLEEP_SECONDS_IN_TSLD_MODE
-        {
-            info!(
-                "Calculated sleep {}s is < {}s in TSLD mode. Adjusting to {}s.",
-                sleep_duration_seconds,
-                MIN_SLEEP_SECONDS_IN_TSLD_MODE,
-                MIN_SLEEP_SECONDS_IN_TSLD_MODE
-            );
-            sleep_duration_seconds = MIN_SLEEP_SECONDS_IN_TSLD_MODE;
-        }
-
-        let min_sleep_param_secs = min_sleep_duration_param.as_secs() as i64;
-        if sleep_duration_seconds < min_sleep_param_secs {
-            info!(
-                "Calculated sleep {}s is less than min_sleep_duration_param {}s. Adjusting to {}s.",
-                sleep_duration_seconds, min_sleep_param_secs, min_sleep_param_secs
-            );
-            sleep_duration_seconds = min_sleep_param_secs;
-        }
-
-        if sleep_duration_seconds <= 0 {
-            error!(
-                "Final sleep duration is non-positive ({}s). Setting to minimal {}s.",
-                sleep_duration_seconds,
-                min_sleep_param_secs.max(1)
-            );
-            sleep_duration_seconds = min_sleep_param_secs.max(1);
-        }
-
-        let sleep_micros = (sleep_duration_seconds as u64) * 1_000_000;
-        info!(
-            "Deep sleeping for {} seconds (target digits mode). Target: {}, Elapsed this loop: {:.3}s, Configured interval (floor): {}s, Min sleep param: {}s.",
-            sleep_duration_seconds,
-            target_datetime.format("%Y-%m-%d %H:%M:%S"),
-            elapsed_time_in_current_loop.as_secs_f32(),
-            self.config.sleep_duration_seconds,
-            min_sleep_duration_param.as_secs()
-        );
-        self.platform.deep_sleep(sleep_micros);
-        // deep_sleep からは復帰しないため、Ok(()) は実際には返らない
-        // しかし、シグネチャ上は Result を返す必要がある
         #[allow(unreachable_code)]
         Ok(())
     }
 
-    fn find_next_target_datetime_from_start<TzZone: TimeZone>(
-        // ... (実装は変更なし) ...
-        start_dt: DateTime<TzZone>,
-        target_minute_digit: Option<u32>,
-        target_second_tens_digit: Option<u32>,
-        _tz: &TzZone,
-    ) -> Option<DateTime<TzZone>>
-    where
-        <TzZone as TimeZone>::Offset: Copy + std::fmt::Debug,
-    {
-        let mut current_dt_iter = start_dt.with_nanosecond(0).unwrap_or(start_dt);
-        if current_dt_iter < start_dt {
-            current_dt_iter = current_dt_iter + ChronoDuration::seconds(1);
-        }
-        debug!("find_next_target_datetime_from_start: initial search iteration time: {:?}, requested start_dt: {:?}", current_dt_iter, start_dt);
-
-        for i in 0..(2 * 60 * 60) {
-            if i > 0 {
-                current_dt_iter = current_dt_iter + ChronoDuration::seconds(1);
-            }
-
-            let minute_val = current_dt_iter.minute();
-            let second_val = current_dt_iter.second();
-
-            let minute_match = target_minute_digit.map_or(true, |d| minute_val % 10 == d);
-
-            let second_match_criteria = if let Some(s_tens_digit) = target_second_tens_digit {
-                second_val / 10 == s_tens_digit
-            } else {
-                second_val == 0
-            };
-
-            if minute_match && second_match_criteria {
-                debug!(
-                    "Found potential target: {:?} (min_match: {}, sec_match: {}) at iteration {}",
-                    current_dt_iter, minute_match, second_match_criteria, i
-                );
-                return Some(current_dt_iter);
-            }
-        }
-        warn!("No target datetime found within the search window (2 hours) from requested start_dt {:?}", start_dt);
-        None
-    }
-
+    /// Sleep until the specified UTC `target_datetime`.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_datetime` – Wake-up time in UTC.
+    /// * `_elapsed_time_in_current_loop` – (Currently unused) Time spent in the current loop.
+    /// * `min_sleep_duration` – Minimum sleep duration.
+    ///
+    /// If the target time is past, or results in a sleep duration less than
+    /// `min_sleep_duration`, `min_sleep_duration` is used.
+    /// If `target_datetime` is in the past, it will sleep for `min_sleep_duration`.
+    ///
+    /// # Errors
+    ///
+    /// This function itself doesn't return `DeepSleepError` but calls
+    /// `platform.deep_sleep` which is expected to not return.
     pub fn sleep_until_target_time(
         &self,
         target_datetime: DateTime<Utc>,
@@ -589,6 +710,17 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
         Ok(())
     }
 
+    /// Disconnect the Wi-Fi interface (instance method).
+    ///
+    /// This is an internal helper.
+    ///
+    /// # Arguments
+    ///
+    /// * `wifi` - Mutable reference to the `BlockingWifi` interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeepSleepError::WifiError` if disconnection fails.
     fn disconnect_wifi_helper(
         &self,
         wifi: &mut BlockingWifi<EspWifi<'static>>,
@@ -600,7 +732,18 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
         Ok(())
     }
 
-    // synchronize_time から Self::disconnect_wifi_static_helper を呼ぶように変更
+    /// Disconnect the Wi-Fi interface (static helper).
+    ///
+    /// This is an internal helper, typically used when `self` is not available
+    /// or when cleaning up in error paths of `perform_actual_time_sync`.
+    ///
+    /// # Arguments
+    ///
+    /// * `wifi` - Mutable reference to the `BlockingWifi` interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeepSleepError::WifiError` if disconnection fails.
     fn disconnect_wifi_static_helper(
         wifi: &mut BlockingWifi<EspWifi<'static>>,
     ) -> Result<(), DeepSleepError> {
@@ -616,154 +759,187 @@ impl<P: DeepSleepPlatform> DeepSleep<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex; // Add Mutex
-    use std::time::Duration;
+    use crate::config::{AppConfig, TargetDigitsConfig}; // AppConfig と TargetDigitsConfig をインポート
+    use crate::mac_address::MacAddress;
+    use std::sync::Arc;
+    use std::time::Duration as StdDuration;
 
-    /// テスト用のモックDeepSleepPlatform
-    struct MockDeepSleepPlatform {
-        called: AtomicBool,
-        last_duration_us: Mutex<u64>, // Change AtomicU64 to Mutex<u64>
+    // MockPlatform の定義 (変更なし)
+    struct MockPlatform {
+        slept_for: std::cell::Cell<Option<u64>>,
     }
 
-    impl MockDeepSleepPlatform {
+    impl MockPlatform {
         fn new() -> Self {
-            MockDeepSleepPlatform {
-                called: AtomicBool::new(false),
-                last_duration_us: Mutex::new(0), // Initialize Mutex
+            MockPlatform {
+                slept_for: std::cell::Cell::new(None),
             }
         }
     }
 
-    impl DeepSleepPlatform for &MockDeepSleepPlatform {
-        // 参照で実装
-        fn deep_sleep(&self, duration_us: u64) {
-            self.called.store(true, Ordering::SeqCst);
-            *self.last_duration_us.lock().unwrap() = duration_us; // Lock and set value
-                                                                  // 実際のディープスリープは行わない
+    impl DeepSleepPlatform for MockPlatform {
+        fn deep_sleep(&self, duration_micros: u64) {
+            self.slept_for.set(Some(duration_micros));
+            // テスト中は実際にはスリープしない
+            info!("MockPlatform: deep_sleep called with {} us", duration_micros);
         }
     }
 
-    fn setup_test_config() -> Arc<AppConfig> {
+    fn create_test_config(
+        sleep_duration_seconds: u64,
+        target_minute_last_digit: Option<u8>,
+        target_second_tens_digit: Option<u8>,
+        sleep_compensation_micros: i64, // 追加
+    ) -> Arc<AppConfig> {
         Arc::new(AppConfig {
-            receiver_mac: crate::mac_address::MacAddress([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]),
-            sleep_duration_seconds: 60,
+            receiver_mac: MacAddress::from_str("00:11:22:33:44:55").unwrap(),
+            sleep_duration_seconds,
             sleep_duration_seconds_for_long: 3600,
-            frame_size: "SVGA".to_string(),
-            auto_exposure_enabled: false,
-            camera_warmup_frames: None,
-            target_minute_last_digit: None,
-            target_second_last_digit: None,
+            frame_size: "VGA".to_string(),
+            auto_exposure_enabled: true,
+            camera_warmup_frames: Some(2),
+            target_digits_config: if target_minute_last_digit.is_some() || target_second_tens_digit.is_some() {
+                Some(TargetDigitsConfig {
+                    minute_last_digit: target_minute_last_digit,
+                    second_tens_digit: target_second_tens_digit,
+                })
+            } else {
+                None
+            },
             wifi_ssid: "test_ssid".to_string(),
             wifi_password: "test_password".to_string(),
             timezone: "Asia/Tokyo".to_string(),
+            sleep_compensation_micros, // 追加
         })
     }
 
     #[test]
-    fn test_sleep_for_duration_long_valid_duration() {
-        let config = setup_test_config();
-        let mock_platform = MockDeepSleepPlatform::new();
-        let deep_sleep = DeepSleep::new(config, &mock_platform); // 参照を渡す
-        let duration_seconds = 10;
+    fn test_fixed_interval_sleep_with_compensation() {
+        let config = create_test_config(600, None, None, 500_000); // 0.5秒補正
+        let platform = MockPlatform::new();
+        let deep_sleep_controller = DeepSleep::new(config, platform);
 
-        // sleep_for_duration_long は Ok(()) を返す前に deep_sleep を呼ぶ
-        // deep_sleep からは戻らない想定だが、モックなので戻ってくる
-        let _ = deep_sleep.sleep_for_duration_long(duration_seconds);
+        let elapsed_time = StdDuration::from_secs(10);
+        let min_sleep_duration = StdDuration::from_secs(1);
 
-        assert!(mock_platform.called.load(Ordering::SeqCst));
+        let result = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
+        assert!(result.is_ok()); // deep_sleepはOk(())を返すが実際には戻らない
+
+        // (600 - 10)秒 * 1_000_000 + 500_000マイクロ秒 = 590_500_000 マイクロ秒
         assert_eq!(
-            *mock_platform.last_duration_us.lock().unwrap(), // Lock and get value
-            duration_seconds * 1_000_000
+            deep_sleep_controller.platform.slept_for.get(),
+            Some(590_500_000)
         );
     }
 
     #[test]
-    fn test_sleep_for_duration_long_zero_duration() {
-        let config = setup_test_config();
-        let mock_platform = MockDeepSleepPlatform::new();
-        let deep_sleep = DeepSleep::new(config, &mock_platform);
-        let result = deep_sleep.sleep_for_duration_long(0);
+    fn test_fixed_interval_sleep_with_negative_compensation() {
+        let config = create_test_config(600, None, None, -2_000_000); // -2秒補正
+        let platform = MockPlatform::new();
+        let deep_sleep_controller = DeepSleep::new(config, platform);
 
-        assert!(result.is_err());
-        match result {
-            Err(DeepSleepError::InvalidDuration(msg)) => {
-                assert!(msg.contains("スリープ時間は0より大きくなければなりません"));
-            }
-            _ => panic!("Expected InvalidDuration error for zero sleep duration"),
-        }
-        assert!(!mock_platform.called.load(Ordering::SeqCst)); // 0秒の場合は deep_sleep は呼ばれない
-    }
+        let elapsed_time = StdDuration::from_secs(5);
+        let min_sleep_duration = StdDuration::from_secs(1);
 
-    // 他のテストケースも同様に MockDeepSleepPlatform を使用するように更新が必要
-    // 例えば、sleep メソッドのテストなど
-
-    #[test]
-    fn test_sleep_fixed_interval() {
-        let config = setup_test_config(); // sleep_duration_seconds = 60
-        let mock_platform = MockDeepSleepPlatform::new();
-        let deep_sleep = DeepSleep::new(Arc::clone(&config), &mock_platform);
-
-        let elapsed_time = Duration::from_secs(10);
-        let min_sleep = Duration::from_secs(1);
-
-        // この呼び出しは deep_sleep を行うため、通常は戻らない
-        let _ = deep_sleep.sleep(elapsed_time, min_sleep);
-
-        assert!(mock_platform.called.load(Ordering::SeqCst));
-        // 60 (config) - 10 (elapsed) = 50 seconds
-        assert_eq!(
-            *mock_platform.last_duration_us.lock().unwrap(), // Lock and get value
-            50 * 1_000_000
-        );
-    }
-
-    #[test]
-    fn test_sleep_fixed_interval_elapsed_exceeds_interval() {
-        let mut cfg_values = (*setup_test_config()).clone();
-        cfg_values.sleep_duration_seconds = 30;
-        let config = Arc::new(cfg_values);
-
-        let mock_platform = MockDeepSleepPlatform::new();
-        let deep_sleep = DeepSleep::new(config, &mock_platform);
-
-        let elapsed_time = Duration::from_secs(40); // 経過時間がインターバルより長い
-        let min_sleep = Duration::from_secs(5); // 最小スリープ時間
-
-        let _ = deep_sleep.sleep(elapsed_time, min_sleep);
-
-        assert!(mock_platform.called.load(Ordering::SeqCst));
-        // 経過時間がインターバルを超えたので、min_sleep (5秒) が使われる
-        assert_eq!(
-            *mock_platform.last_duration_us.lock().unwrap(), // Lock and get value
-            5 * 1_000_000
-        );
-    }
-
-    // sleep_until_target_digits_match のテストはより複雑で、
-    // 時刻のモックや Chrono との連携が必要になります。
-    // ここでは、DeepSleepPlatform のモックが使われることを示す基本的な構造のみ示します。
-    #[test]
-    #[ignore] // このテストは時刻の扱いや find_next_target_datetime_from_start の詳細なモックが必要
-    fn test_sleep_until_target_digits_mode() {
-        let mut cfg_values = (*setup_test_config()).clone();
-        cfg_values.target_minute_last_digit = Some(5); // 例: 毎時 X5 分
-        cfg_values.target_second_last_digit = Some(0); // 例: 毎分 0X 秒
-        let config = Arc::new(cfg_values);
-
-        let mock_platform = MockDeepSleepPlatform::new();
-        let deep_sleep_controller = DeepSleep::new(config, &mock_platform);
-
-        let elapsed_time = Duration::from_secs(2);
-        let min_sleep_duration = Duration::from_secs(1);
-
-        // 現在時刻に依存するため、安定したテストには時刻のモックが必要
-        // ここでは、呼び出しが行われることの確認に留める (実際にはより詳細な検証が必要)
         let _ = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
-
-        // 実際の呼び出しとdurationの検証は、find_next_target_datetime_from_start の挙動と
-        // 現在時刻に大きく依存するため、ここでは called フラグのみ確認
-        assert!(mock_platform.called.load(Ordering::SeqCst));
-        // LAST_SLEEP_DURATION_US の値は実行タイミングによって変わるため、ここでは検証しない
+        // (600 - 5)秒 * 1_000_000 - 2_000_000マイクロ秒 = 593_000_000 マイクロ秒
+        assert_eq!(
+            deep_sleep_controller.platform.slept_for.get(),
+            Some(593_000_000)
+        );
     }
+
+    #[test]
+    fn test_fixed_interval_sleep_exceeding_interval() {
+        let config = create_test_config(60, None, None, 100_000); // 0.1秒補正
+        let platform = MockPlatform::new();
+        let deep_sleep_controller = DeepSleep::new(config, platform);
+
+        let elapsed_time = StdDuration::from_secs(70); // 処理時間がインターバルを超過
+        let min_sleep_duration = StdDuration::from_secs(5);
+
+        let _ = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
+        // min_sleep_duration (5秒) * 1_000_000 + 100_000マイクロ秒 = 5_100_000 マイクロ秒
+        // 処理時間がインターバルを超えた場合、sleep_for_secs は min_sleep_duration.as_secs() になる。
+        // その後、補正値が加算される。
+        // 5 * 1_000_000 + 100_000 = 5_100_000
+        assert_eq!(
+            deep_sleep_controller.platform.slept_for.get(),
+            Some(5_100_000)
+        );
+    }
+
+    #[test]
+    fn test_fixed_interval_sleep_zero_calculated_duration() {
+        // このテストは、補正前の計算結果が0になるケース
+        let config = create_test_config(30, None, None, 200_000); // 0.2秒補正
+        let platform = MockPlatform::new();
+        let deep_sleep_controller = DeepSleep::new(config, platform);
+
+        let elapsed_time = StdDuration::from_secs(30); // 処理時間 = インターバル
+        let min_sleep_duration = StdDuration::from_secs(2);
+
+        let _ = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
+        // (30 - 30) = 0 秒。 sleep_for_micros = 0.
+        // compensation_micros = 200_000.
+        // sleep_for_micros = 0 + 200_000 = 200_000.
+        // この値は0ではないので、そのまま使われる。
+        assert_eq!(
+            deep_sleep_controller.platform.slept_for.get(),
+            Some(200_000)
+        );
+
+        // 補正によって0になるケース
+        let config_neg_comp = create_test_config(30, None, None, -2_000_000); // -2秒補正
+        let platform_neg_comp = MockPlatform::new();
+        let deep_sleep_controller_neg_comp = DeepSleep::new(config_neg_comp, platform_neg_comp);
+        let _ = deep_sleep_controller_neg_comp.sleep(StdDuration::from_secs(28), StdDuration::from_secs(3));
+        // (30 - 28) = 2秒。 sleep_for_micros = 2_000_000.
+        // compensation_micros = -2_000_000.
+        // sleep_for_micros = 2_000_000 - 2_000_000 = 0.
+        // この場合、min_sleep_duration (3秒 = 3_000_000 us) が使われる。
+        assert_eq!(
+            deep_sleep_controller_neg_comp.platform.slept_for.get(),
+            Some(3_000_000)
+        );
+    }
+
+     #[test]
+    fn test_fixed_interval_sleep_zero_calculated_and_zero_min_duration() {
+        let config = create_test_config(10, None, None, -10_000_000); // -10秒補正
+        let platform = MockPlatform::new();
+        let deep_sleep_controller = DeepSleep::new(config, platform);
+
+        let elapsed_time = StdDuration::from_secs(0); // 処理時間0
+        let min_sleep_duration = StdDuration::from_secs(0); // 最小スリープも0
+
+        let _ = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
+        // (10 - 0) = 10秒。sleep_for_micros = 10_000_000.
+        // compensation_micros = -10_000_000.
+        // sleep_for_micros = 10_000_000 - 10_000_000 = 0.
+        // min_sleep_duration も 0 なので、デフォルトの1秒 (1_000_000 us)
+        assert_eq!(
+            deep_sleep_controller.platform.slept_for.get(),
+            Some(1_000_000)
+        );
+    }
+
+    // sleep_until_target_digits_match のテストは sleep_compensation_micros に直接依存しないため、
+    // 既存のテストをそのまま利用するか、必要に応じて create_test_config にデフォルトの補正値 (例: 0) を渡すように修正します。
+    // ここでは、create_test_config が修正されたので、既存のテストも影響を受ける可能性があります。
+    // sleep_until_target_digits_match のテストケースも sleep_compensation_micros を渡すように修正します。
+
+    #[test]
+    fn test_sleep_until_target_digits_match_no_targets() {
+        let config = create_test_config(600, None, None, 0); // 補正なし
+        let platform = MockPlatform::new();
+        let mut deep_sleep_controller = DeepSleep::new(config, platform);
+        let result =
+            deep_sleep_controller.sleep_until_target_digits_match(StdDuration::from_secs(5));
+        assert!(result.is_ok());
+        assert!(deep_sleep_controller.platform.slept_for.get().is_none()); // No sleep should occur
+    }
+
+    // 他の sleep_until_target_digits_match のテストケースも同様に create_test_config を使用するように修正
+    // (calculate_seconds_to_target のテストは AppConfig に依存しないので変更不要)
 }

@@ -3,17 +3,21 @@ use esp_idf_svc::{
     hal::{
         adc::{
             attenuation::DB_12,
-            oneshot::config::{AdcChannelConfig, Calibration},
-            oneshot::{AdcChannelDriver, AdcDriver},
+            oneshot::{
+                AdcDriver,
+                config::{AdcChannelConfig, Calibration},
+                AdcChannelDriver
+            }
         },
         delay::FreeRtos,
         peripherals::Peripherals,
     },
-    nvs::EspDefaultNvsPartition,
+    nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault}, // Added EspNvs, NvsDefault
     wifi::{BlockingWifi, EspWifi},
 };
-use std::sync::Arc; // Added Arc
-use std::time::{Duration, Instant}; // Removed SystemTime, UNIX_EPOCH
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use chrono::{Datelike, NaiveDate, Utc}; // Removed Local, TimeZone
 
 mod camera;
 mod config;
@@ -35,15 +39,20 @@ const DUMMY_HASH: &str = "000000000000000000000000000000000000000000000000000000
 const MIN_MV: f32 = 128.0; // UnitCam GPIO0 の実測値に合わせて調整
 const MAX_MV: f32 = 3130.0; // UnitCam GPIO0 の実測値に合わせて調整
 const RANGE_MV: f32 = MAX_MV - MIN_MV;
-const LOW_VOLTAGE_THRESHOLD_PERCENT: u8 = 8; // このパーセンテージ未満で低電圧モード
-                                             // --- ここまで 定数 ---
+const LOW_VOLTAGE_THRESHOLD_PERCENT: u8 = 8;
 
-// --- 画像送信タスク ---
+// NVS constants
+const NVS_NAMESPACE: &str = "app_state";
+const NVS_KEY_LAST_BOOT_DATE: &str = "last_boot_d"; // Max 15 chars for key
+
+// --- ここまで 定数 ---
+
+// --- 電圧測定 & パーセンテージ計算 (WiFi開始前) ---
 fn transmit_data_task(
     image_data_option: Option<Vec<u8>>,
     config: &AppConfig,
     measured_voltage_percent: u8,
-    wifi: &mut BlockingWifi<EspWifi<'static>>, // modem, sysloop, nvs を BlockingWifi に置き換え
+    _wifi: &mut BlockingWifi<EspWifi<'static>>, // modem, sysloop, nvs を BlockingWifi に置き換え, prefixed with _
     led: &mut StatusLed,
 ) -> anyhow::Result<()> {
     unsafe {
@@ -55,30 +64,38 @@ fn transmit_data_task(
     esp_now_sender.add_peer(&config.receiver_mac)?;
     info!("ESP-NOW送信機を初期化し、ピアを追加しました");
 
+    // Prepare timestamp string
+    let tz: chrono_tz::Tz = config
+        .timezone
+        .parse()
+        .unwrap_or(chrono_tz::Asia::Tokyo);
+    let current_time_formatted = Utc::now()
+        .with_timezone(&tz)
+        .format("%Y/%m/%d %H:%M:%S%.3f")
+        .to_string();
+
     match image_data_option {
         Some(image_data) => {
             // image_data は Vec<u8>
-            let hash_result = ImageFrame::calculate_hash(&image_data); // image_data の参照を渡す
+            match ImageFrame::calculate_hash(&image_data) {
+                Ok(hash_str) => {
+                    let base_payload_bytes =
+                        ImageFrame::prepare_hash_message(&hash_str, measured_voltage_percent);
+                    let mut final_payload_str = String::from_utf8(base_payload_bytes)
+                        .unwrap_or_else(|_| format!("HASH:{},VOLT:{}", hash_str, measured_voltage_percent)); // Fallback if UTF-8 conversion fails
+                    final_payload_str.push(',');
+                    final_payload_str.push_str(&current_time_formatted);
+                    let final_payload_bytes = final_payload_str.into_bytes();
 
-            match hash_result {
-                Err(e) => {
-                    error!("ハッシュ計算エラー: {:?}", e);
-                    led.blink_error()?;
-                    return Err(e.into());
-                }
-                Ok(hash) => {
-                    info!("画像SHA256: {}", hash);
-                    let hash_payload =
-                        ImageFrame::prepare_hash_message(&hash, measured_voltage_percent);
-
-                    info!("画像ハッシュ (と電圧情報) を送信します");
-                    if let Err(e) = esp_now_sender.send(&config.receiver_mac, &hash_payload, 1000) {
-                        error!("ハッシュ送信エラー: {:?}", e);
-                        led.blink_error()?;
-                        return Err(e.into());
-                    }
-
-                    info!("画像チャンクを送信します...");
+                    info!(
+                        "送信データ準備完了 (画像あり): ハッシュ={}, 電圧={}%, 時刻={}, ペイロードサイズ={}",
+                        hash_str,
+                        measured_voltage_percent,
+                        current_time_formatted,
+                        final_payload_bytes.len()
+                    );
+                    esp_now_sender.send(&config.receiver_mac, &final_payload_bytes, 1000)?;
+                    info!("画像ハッシュ、電圧情報、時刻を送信しました。");
                     // image_data はここで使用終了なので Vec<u8> を直接渡す
                     match esp_now_sender.send_image_chunks(&config.receiver_mac, image_data, 250, 5)
                     {
@@ -93,21 +110,29 @@ fn transmit_data_task(
                         }
                     }
                 }
+                Err(e) => {
+                    error!("ハッシュ計算エラー: {:?}", e);
+                    led.blink_error()?;
+                    return Err(e.into());
+                }
             }
         }
-        None => {
-            info!("送信する画像がありません。ダミーデータを送信します。");
-            let hash_payload =
+        None => { // 画像データがない場合 (低電圧など)
+            let base_payload_bytes =
                 ImageFrame::prepare_hash_message(DUMMY_HASH, measured_voltage_percent);
-
-            info!("ダミーハッシュ (と電圧情報) を送信します");
-            if let Err(e) = esp_now_sender.send(&config.receiver_mac, &hash_payload, 1000) {
-                error!("ダミーハッシュ送信エラー: {:?}", e);
-                return Err(e.into());
-            } else {
-                info!("ダミーハッシュ送信成功");
-            }
-            info!("画像チャンクの送信はスキップします。");
+            let mut final_payload_str = String::from_utf8(base_payload_bytes)
+                .unwrap_or_else(|_| format!("HASH:{},VOLT:{}", DUMMY_HASH, measured_voltage_percent)); // Fallback
+            final_payload_str.push(',');
+            final_payload_str.push_str(&current_time_formatted);
+            let final_payload_bytes = final_payload_str.into_bytes();
+            info!(
+                "送信データ準備完了 (画像なし - ダミーハッシュ): 電圧={}%, 時刻={}, ペイロードサイズ={}",
+                measured_voltage_percent,
+                current_time_formatted,
+                final_payload_bytes.len()
+            );
+            esp_now_sender.send(&config.receiver_mac, &final_payload_bytes, 1000)?;
+            info!("ダミーハッシュ、電圧情報、時刻を送信しました (画像なし)。");
         }
     }
     Ok(())
@@ -119,30 +144,204 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    let loop_start_time = Instant::now(); // 処理開始時間を記録
-    let min_sleep_duration = Duration::from_secs(1); // 最小スリープ時間: 1秒
+    let loop_start_time = Instant::now();
+    let min_sleep_duration = Duration::from_secs(1);
 
-    // 設定をロード
     let app_config = match AppConfig::load() {
-        Ok(cfg) => Arc::new(cfg), // Wrap in Arc
+        Ok(cfg) => Arc::new(cfg),
         Err(e) => {
             error!("設定ファイルの読み込みに失敗しました: {}", e);
             panic!("設定ファイルの読み込みエラー: {}", e);
         }
     };
-    // info!("設定をロードしました: {:?}", app_config);
 
-    // ペリフェラルを初期化
     info!("ペリフェラルを初期化しています");
     let peripherals_all = Peripherals::take().unwrap();
-    let modem_peripheral = peripherals_all.modem;
+    let mut modem_peripheral_option = Some(peripherals_all.modem);
 
     let sysloop = EspSystemEventLoop::take()?;
-    let nvs_partition = EspDefaultNvsPartition::take()?;
+    let nvs_default_partition = EspDefaultNvsPartition::take()?; // Renamed for clarity
+    let mut nvs = EspNvs::new(nvs_default_partition.clone(), NVS_NAMESPACE, true)?; // NvsDefault is not a type, use bool for create_if_missing
 
-    // LEDを初期化
     let mut led = StatusLed::new(peripherals_all.pins.gpio4)?;
-    led.turn_off()?; // LEDを消灯
+    led.turn_off()?;
+
+    let mut deep_sleep_controller = DeepSleep::new(app_config.clone(), EspIdfDeepSleep);
+    let mut wifi_option: Option<BlockingWifi<EspWifi<'static>>> = None;
+
+    // rtcの現在時刻を取得しておく
+    let tz: chrono_tz::Tz = app_config.timezone.parse().unwrap_or(chrono_tz::Asia::Tokyo);
+    let mut rtc_time = Utc::now().with_timezone(&tz).date_naive(); // Initialize with RTC time
+
+    // --- NVSから最終起動日を読み込む ---
+    let mut last_boot_date_str_opt: Option<String> = None;
+    let mut buf = [0u8; 16]; // Buffer for date string "YYYY-MM-DD" + null
+    match nvs.get_str(NVS_KEY_LAST_BOOT_DATE, &mut buf) {
+        Ok(Some(date_str)) => {
+            // Valid string obtained, remove null terminators for proper parsing
+            if let Some(nul_pos) = date_str.find('\0') {
+                last_boot_date_str_opt = Some(date_str[..nul_pos].to_string());
+            } else {
+                last_boot_date_str_opt = Some(date_str.to_string());
+            }
+            info!(
+                "NVSから最終起動日を読み込みました: {:?}",
+                last_boot_date_str_opt
+            );
+        }
+        Ok(None) => {
+            info!("NVSに最終起動日のエントリが見つかりません。");
+            last_boot_date_str_opt = None;
+        }
+        Err(e) => {
+            warn!(
+                "NVSからの最終起動日の読み込みに失敗しました: {:?}。デフォルト値を使用します。",
+                e
+            );
+            last_boot_date_str_opt = None; // Treat error as no date found
+        }
+    }
+
+    let mut current_date_for_nvs = Utc::now().with_timezone(&tz).date_naive(); // Initialize with RTC time
+
+    let mut sntp_performed_in_this_cycle = false;
+
+    // --- 条件付き時刻同期処理 ---
+    let time_sync_needed_by_date = deep_sleep_controller.is_time_sync_required().unwrap_or(true);
+    let mut is_first_boot_today = true; // Default to true
+    
+    // rtcの現在時刻が2025年以前の場合は電源OFFからの復旧のため時刻同期対象とする
+    if rtc_time.year() < 2025 {
+        info!("RTCの現在時刻が2025年以前のため、時刻同期が必要です。");
+        let time_sync_needed_by_date = true;
+    }
+
+    if let Some(ref last_boot_date_str) = last_boot_date_str_opt { // Changed to use ref
+        match NaiveDate::parse_from_str(last_boot_date_str, "%Y-%m-%d") {
+            Ok(parsed_last_boot_date) => {
+                // current_date_for_nvs is already NaiveDate in the correct timezone
+                if parsed_last_boot_date == current_date_for_nvs {
+                    is_first_boot_today = false;
+                    info!(
+                        "最終起動日 ({}) は今日 ({}) です。is_first_boot_today = false",
+                        parsed_last_boot_date, current_date_for_nvs
+                    );
+                } else {
+                    info!(
+                        "最終起動日 ({}) は今日 ({}) ではありません。is_first_boot_today = true",
+                        parsed_last_boot_date, current_date_for_nvs
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "NVSから読み込んだ最終起動日 '{}' のパースに失敗しました: {:?}。is_first_boot_today = true として扱います。",
+                    last_boot_date_str, e
+                );
+                // Keep is_first_boot_today = true
+            }
+        }
+    } else {
+        info!("最終起動日の記録がNVSにないため、is_first_boot_today = true として扱います。");
+        // Keep is_first_boot_today = true
+    }
+    info!("初回起動フラグ (SNTP前): is_first_boot_today = {}", is_first_boot_today);
+
+
+    if time_sync_needed_by_date || is_first_boot_today {
+        info!("時刻同期が必要です (日付による判断: {}, 本日初回起動: {})。", time_sync_needed_by_date, is_first_boot_today);
+        led.blink_error()?; // SNTP試行中を示す点滅。エラーではないので、赤点滅ではなく青点滅にすることも検討
+
+        let modem_taken = modem_peripheral_option
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Modem peripheral already taken"))?;
+
+        let mut wifi = match BlockingWifi::wrap(
+            EspWifi::new(modem_taken, sysloop.clone(), Some(nvs_default_partition.clone()))?,
+            sysloop.clone(),
+        ) {
+            Ok(w) => w,
+            Err(e) => {
+                error!("WiFiの初期化に失敗しました: {:?}", e);
+                // WiFi初期化失敗時は modem を戻す試み (エラーハンドリング改善)
+                return Err(e.into());
+            }
+        };
+
+        match deep_sleep_controller.perform_actual_time_sync(
+            &mut wifi,
+            &app_config.wifi_ssid,
+            &app_config.wifi_password,
+        ) {
+            Ok(_) => {
+                info!("SNTPによる時刻同期が成功しました。");
+                sntp_performed_in_this_cycle = true;
+                // 同期後の現在時刻でNVS用の日付を更新
+                current_date_for_nvs = Utc::now().with_timezone(&tz).date_naive();
+                info!("SNTP同期後のNVS用日付: {}", current_date_for_nvs);
+
+                // SNTP成功後、last_boot_date_str_opt を再評価して is_first_boot_today を更新
+                // この時点でNVSにはまだ書き込んでいないが、ロジック上は今日の日付で判断すべき
+                if let Some(ref last_boot_date_str) = &last_boot_date_str_opt { // Re-borrow last_boot_date_str_opt
+                    match NaiveDate::parse_from_str(last_boot_date_str, "%Y-%m-%d") {
+                        Ok(parsed_last_boot_date) => {
+                            if parsed_last_boot_date == current_date_for_nvs {
+                                is_first_boot_today = false; // SNTP後の日付で再確認
+                                info!("SNTP後再評価: 最終起動日 ({}) は今日 ({}) です。is_first_boot_today = false", parsed_last_boot_date, current_date_for_nvs);
+                            } else {
+                                is_first_boot_today = true; // SNTP後の日付で今日でなければ初回起動
+                                info!("SNTP後再評価: 最終起動日 ({}) は今日 ({}) ではありません。is_first_boot_today = true", parsed_last_boot_date, current_date_for_nvs);
+                            }
+                        }
+                        Err(_) => { /* パースエラーの場合は初回起動として扱う（既にログ済み） */ }
+                    }
+                } else {
+                    is_first_boot_today = true; // NVSに記録がなければ初回起動
+                    info!("SNTP後再評価: NVSに記録なし。is_first_boot_today = true");
+                }
+                info!("初回起動フラグ (SNTP後): is_first_boot_today = {}", is_first_boot_today);
+
+            }
+            Err(e) => {
+                error!("SNTPによる時刻同期に失敗しました: {:?}", e);
+                // エラーを返すが、致命的ではないかもしれないので処理を続けることも検討できる
+                // return Err(e.into()); // ここでリターンすると以降の処理が実行されない
+                warn!("SNTP失敗後も処理を続行します。");
+            }
+        }
+        // WiFiインスタンスをOptionに格納
+        wifi_option = Some(wifi);
+        led.turn_off()?; // SNTP試行終了
+    } else {
+        info!("時刻同期は不要です。スキップします。");
+        // modem_peripheral_option は Some のままのはず
+    }
+    
+    // --- NVSに現在の日付を書き込む関数 (クロージャとして定義) ---
+    let store_current_date_to_nvs = |nvs_instance: &mut EspNvs<NvsDefault>| {
+        let date_str_to_store = current_date_for_nvs.format("%Y-%m-%d").to_string();
+        match nvs_instance.set_str(NVS_KEY_LAST_BOOT_DATE, &date_str_to_store) {
+            Ok(_) => info!("NVSに現在の日付を保存しました: {}", date_str_to_store),
+            Err(e) => warn!("NVSへの日付の書き込みに失敗: {:?}", e),
+        }
+    };
+
+    // 時刻同期が必要または本日初回起動の場合はNVSに日付を書き込んで DeepSleep する
+    if time_sync_needed_by_date || is_first_boot_today {
+        info!("初回起動日としてNVSに日付を書き込みます。");
+        store_current_date_to_nvs(&mut nvs);
+        // DeepSleep する
+        led.turn_off()?;
+        if app_config.target_digits_config.is_some() {
+        info!("SNTP未実行 & ターゲットディジットモード: 通常の経過時間でスリープ");
+        let elapsed_time = loop_start_time.elapsed();
+        let _ = deep_sleep_controller.sleep_until_target_digits_match(elapsed_time);
+    } else {
+            info!("1秒後に起動するDeepSleepを開始します。");
+            let _ = deep_sleep_controller.sleep_for_duration(1)?;
+        }
+        // ディープスリープから復帰することはないため、以降のコードは実行されない
+    }
 
     // --- ADC2 を初期化 ---
     info!("ADC2を初期化しています (GPIO0)");
@@ -174,8 +373,9 @@ fn main() -> anyhow::Result<()> {
             info!("計算されたパーセンテージ: {} %", measured_voltage_percent);
         }
         Err(e) => {
-            error!("ADC読み取りエラー: {:?}. 電圧は0%として扱います。", e);
-            // エラーでも続行するが、パーセンテージは0として扱う
+            error!("ADC読み取りエラー: {:?}. 電圧は255%として扱います。", e);
+            // エラーでも続行するが、パーセンテージは255として扱う
+            measured_voltage_percent = 255;
         }
     }
     // ADCドライバはこの後不要になるので、ここでドロップ
@@ -183,7 +383,6 @@ fn main() -> anyhow::Result<()> {
     drop(adc2);
     // --- 電圧測定ここまで ---
 
-    let mut deep_sleep_controller = DeepSleep::new(app_config.clone(), EspIdfDeepSleep); // EspIdfDeepSleep を渡すように変更
 
     // --- measured_voltage_percent が 0% の場合はlongスリープ ---
     if measured_voltage_percent == 0 {
@@ -191,50 +390,20 @@ fn main() -> anyhow::Result<()> {
             "電圧が0%のため、{}秒間の長時間ディープスリープに入ります。",
             app_config.sleep_duration_seconds_for_long
         );
-        // LEDを消灯させておく
         led.turn_off()?;
-        // 長時間ディープスリープに入る
-        match deep_sleep_controller
-            .sleep_for_duration_long(app_config.sleep_duration_seconds_for_long)
-        {
+        store_current_date_to_nvs(&mut nvs); // Store date before long sleep
+        match deep_sleep_controller.sleep_for_duration(app_config.sleep_duration_seconds_for_long) {
             Ok(_) => { /* 通常ここには到達しない */ }
             Err(e) => {
                 error!("長時間ディープスリープの開始に失敗: {:?}", e);
                 // エラーが発生した場合でも、フォールバックとして短時間のスリープを試みるか、
                 // またはパニックするなどのエラー処理が必要かもしれないが、
-                // DeepSleep::sleep_for_duration_long の現在の実装ではエラーから復帰しない想定
+                // DeepSleep::sleep_for_duration の現在の実装ではエラーから復帰しない想定
             }
         }
         // ディープスリープから復帰することはないため、以降のコードは実行されない
     }
     // --- ここまで measured_voltage_percent が 0% の場合の処理 ---
-
-    // WiFiと時刻同期の準備
-    info!("WiFiを初期化しています (時刻同期用)");
-    let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(
-            modem_peripheral,
-            sysloop.clone(),
-            Some(nvs_partition.clone()),
-        )?,
-        sysloop.clone(),
-    )?;
-
-    // 条件付き時刻同期処理
-    match deep_sleep_controller.ensure_time_sync_if_needed(
-        &mut wifi,
-        &app_config.wifi_ssid,
-        &app_config.wifi_password,
-    ) {
-        Ok(_) => info!("時刻同期（条件付き）が正常に完了またはスキップされました。"),
-        Err(e) => {
-            error!("時刻同期（条件付き）に失敗しました: {:?}", e);
-            // エラーが発生しても処理を続行するが、LEDでエラーを示す
-            led.blink_error()?;
-            // ここでリターンするか、エラーを無視して続行するかは要件による
-            // 今回は続行し、スリープに入る
-        }
-    }
 
     // --- 画像取得タスク (低電圧時はスキップ) ---
     let mut image_data_option: Option<Vec<u8>> = None; // Option<Vec<u8>> に変更
@@ -310,25 +479,30 @@ fn main() -> anyhow::Result<()> {
     // camera インスタンスはここでドロップされる
 
     // ESP-NOW用にWiFiを再設定・起動
-    info!("ESP-NOW用にWiFiをSTAモードで再起動します。");
+    info!("ESP-NOW用にWiFiをSTAモードで準備します。");
+    let mut wifi_instance_for_espnow = if let Some(wifi) = wifi_option.take() {
+        info!("時刻同期で使用した(かもしれない)WiFiインスタンスをESP-NOW用に再設定します。");
+        wifi
+    } else {
+        // modem_peripheral_option が None の場合、SNTP処理で消費されたか、最初からなかった
+        if modem_peripheral_option.is_none() {
+            info!("ESP-NOW用WiFi初期化のためにmodemペリフェラルを再取得します。");
+            modem_peripheral_option = Some(Peripherals::take().unwrap().modem);
+        }
+        info!("ESP-NOW用にWiFiを新規に初期化します。");
+        BlockingWifi::wrap(
+            EspWifi::new(
+                modem_peripheral_option.take().unwrap(),
+                sysloop.clone(),
+                Some(nvs_default_partition.clone()), // nvs_default_partition を使用
+            )?,
+            sysloop.clone(),
+        )?
+    };
+
     // ESP-NOWは特定のSSIDへの接続を必要としないため、ダミー設定で起動
     // ただし、esp_wifi_start() は必要
-    // 既存の BlockingWifi インスタンスを再利用
-    match wifi.stop() {
-        Ok(_) => info!("時刻同期用のWiFiセッションを停止しました。"),
-        Err(e) if e.code() == esp_idf_sys::ESP_ERR_WIFI_NOT_INIT => {
-            info!("WiFiはまだ初期化されていません (ESP-NOW用)。");
-        }
-        Err(e) => {
-            warn!(
-                "時刻同期用WiFiセッションの停止に失敗: {:?}。処理を続行します。",
-                e
-            );
-        }
-    }
-    // ESP-NOWのためだけにSTAモードで起動する。特定のAPへの接続はしない。
-    // ESP-NOWのesp_now_init()が内部でWiFiがアクティブであることを期待するため。
-    wifi.set_configuration(&esp_idf_svc::wifi::Configuration::Client(
+    wifi_instance_for_espnow.set_configuration(&esp_idf_svc::wifi::Configuration::Client(
         esp_idf_svc::wifi::ClientConfiguration {
             ssid: "".try_into().unwrap(),     // ESP-NOWではSSIDは通常関係ない
             password: "".try_into().unwrap(), // パスワードも同様
@@ -336,7 +510,7 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     ))?;
-    wifi.start()?;
+    wifi_instance_for_espnow.start()?;
     info!("WiFiがESP-NOW用にSTAモードで起動しました。");
 
     // --- データ送信タスク ---
@@ -345,28 +519,25 @@ fn main() -> anyhow::Result<()> {
         image_data_option, // Option<Vec<u8>> を渡す
         &app_config,
         measured_voltage_percent,
-        &mut wifi,
+        &mut wifi_instance_for_espnow, // ESP-NOW用に準備したインスタンスを渡す
         &mut led,
     ) {
         error!("データ送信タスクでエラーが発生しました: {:?}", e);
         // エラーが発生してもスリープ処理は行う
     }
 
+    
+    led.turn_off()?;
+    store_current_date_to_nvs(&mut nvs); // Store date before normal sleep
+    
     // --- スリープ処理 ---
     let elapsed_time = loop_start_time.elapsed();
-    info!("メインループ処理時間: {:?}", elapsed_time);
-
-    // min_sleep_duration はループの最初の方で定義済み: Duration::from_secs(1)
-
-    led.turn_off()?; // スリープ前にLEDを消灯
-
-    // DeepSleepモジュールのスリープ関数を呼び出す
-    // スリープ時間の計算は DeepSleep::sleep 内で行われる
+    info!("メインループ処理時間 : {:?}", elapsed_time);
+    info!("固定インターバルモードでスリープ");
     let _ = deep_sleep_controller.sleep(
-        elapsed_time,       // StdDuration (std::time::Duration)
-        min_sleep_duration, // StdDuration (std::time::Duration)
+        elapsed_time,
+        min_sleep_duration,
     );
 
-    // スリープから復帰することはないはずなので、以下のコードは実行されない
     Ok(())
 }
