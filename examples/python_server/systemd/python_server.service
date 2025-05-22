@@ -1,0 +1,19 @@
+[Unit]
+Description=Python USB CDC Image Receiver Service
+After=network.target
+
+
+[Service]
+Type=simple
+# Set the user to run the service. Replace <user_name> with your actual username.
+User=<user_name>
+# (Optional) Set the group to run the service. Replace <group_name> with your actual group name, or remove this line if not needed.
+Group=<group_name>
+WorkingDirectory=/home/<user_name>/esp-camera-rs/examples/python_server
+ExecStart=/home/<user_name>/esp-camera-rs/examples/python_server/.venv/bin/python app.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

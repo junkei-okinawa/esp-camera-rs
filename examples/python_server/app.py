@@ -1,22 +1,21 @@
-import os
-import io
-import time
-import asyncio
-import serial_asyncio
-import serial
-from datetime import datetime
-import logging  # Ensure logging is imported
 import argparse
+import asyncio
+import io
+import logging
+import os
+import time
+from datetime import datetime
 
+import serial
+import serial_asyncio
+from dotenv import load_dotenv
 from PIL import Image
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import influxdb_client
-from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
+load_dotenv()
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -160,7 +159,7 @@ class SerialProtocol(asyncio.Protocol):
     def process_buffer(self):
         """Process the buffer to find and handle complete frames with enhanced frame format."""
         global image_buffers, last_receive_time
-        processed_frame = False  # Flag to indicate if a frame was processed in this call
+        # processed_frame = False  # Flag to indicate if a frame was processed in this call
 
         while True:  # Process all complete frames in the buffer
             # フレームレベルのタイムアウトチェック - 長めの値に設定
@@ -168,7 +167,7 @@ class SerialProtocol(asyncio.Protocol):
                 time.monotonic() - self.frame_start_time > 2.0
             ):  # 2秒タイムアウト（複数カメラ対応のため延長）
                 logger.warning(
-                    f"Frame timeout detected. Discarding partial frame data."
+                    "Frame timeout detected. Discarding partial frame data."
                 )
                 start_index_after_timeout = self.buffer.find(
                     START_MARKER, 1
@@ -229,7 +228,7 @@ class SerialProtocol(asyncio.Protocol):
             try:
                 seq_num = int.from_bytes(seq_bytes, byteorder="big")
             except ValueError:
-                logger.error(f"Frame decode error: Invalid sequence number. Discarding frame.")
+                logger.error("Frame decode error: Invalid sequence number. Discarding frame.")
                 next_start = self.buffer.find(START_MARKER, 1)
                 if next_start != -1:
                     self.buffer = self.buffer[next_start:]
@@ -273,9 +272,9 @@ class SerialProtocol(asyncio.Protocol):
             # フレーム全体の長さを計算
             # START_MARKER + MAC + FRAME_TYPE + SEQUENCE + DATA_LEN + DATA + CHECKSUM + END_MARKER
             frame_end_index = (len(START_MARKER) + MAC_ADDRESS_LENGTH + FRAME_TYPE_LENGTH + 
-                             SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES + data_len + 
-                             CHECKSUM_LENGTH + len(END_MARKER))
-                             
+                            SEQUENCE_NUM_LENGTH + LENGTH_FIELD_BYTES + data_len + 
+                            CHECKSUM_LENGTH + len(END_MARKER))
+                            
             if len(self.buffer) < frame_end_index:
                 if DEBUG_FRAME_PARSING:
                     logger.debug(f"Need more data for full frame. Expected: {frame_end_index}, Have: {len(self.buffer)}")
@@ -287,7 +286,7 @@ class SerialProtocol(asyncio.Protocol):
             
             # チェックサム部分の位置
             checksum_start = data_start_index + data_len
-            checksum_bytes = self.buffer[checksum_start:checksum_start + CHECKSUM_LENGTH]
+            # checksum_bytes = self.buffer[checksum_start:checksum_start + CHECKSUM_LENGTH]
             
             # エンドマーカーの位置
             end_marker_start = checksum_start + CHECKSUM_LENGTH
@@ -295,7 +294,7 @@ class SerialProtocol(asyncio.Protocol):
 
             # エンドマーカーを確認
             if footer == END_MARKER:
-                processed_frame = True
+                # processed_frame = True
                 self.frame_start_time = None  # 正常にフレームを処理したので時間計測リセット
                 
                 # チェックサムの検証（オプション）
@@ -475,7 +474,9 @@ async def main(port, baud):
 
             # <<<--- [修正5] Pass the created Future via the factory ---
             # The lambda creates a protocol instance and passes the future to its __init__
-            protocol_factory = lambda: SerialProtocol(connection_lost_future)
+            def protocol_factory():
+                # Create a new instance of SerialProtocol with the future
+                return SerialProtocol(connection_lost_future)
 
             # serial_asyncio creates the protocol instance using the factory
             transport, active_protocol = await serial_asyncio.create_serial_connection(
@@ -524,7 +525,7 @@ async def main(port, baud):
                 transport.close()
             # Clear references for the next iteration
             transport = None
-            active_protocol = None
+            # active_protocol = None
 
         # Check loop status before sleeping
         if not loop.is_running():
