@@ -1,13 +1,13 @@
+use chrono::{Datelike, NaiveDate, Timelike, Utc};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
         adc::{
             attenuation::DB_12,
             oneshot::{
-                AdcDriver,
                 config::{AdcChannelConfig, Calibration},
-                AdcChannelDriver
-            }
+                AdcChannelDriver, AdcDriver,
+            },
         },
         delay::FreeRtos,
         peripherals::Peripherals,
@@ -16,8 +16,7 @@ use esp_idf_svc::{
     wifi::{BlockingWifi, EspWifi},
 };
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use chrono::{Datelike, NaiveDate, Utc}; // Removed Local, TimeZone
+use std::time::{Duration, Instant}; // Removed Local, TimeZone
 
 mod camera;
 mod config;
@@ -65,10 +64,7 @@ fn transmit_data_task(
     info!("ESP-NOW送信機を初期化し、ピアを追加しました");
 
     // Prepare timestamp string
-    let tz: chrono_tz::Tz = config
-        .timezone
-        .parse()
-        .unwrap_or(chrono_tz::Asia::Tokyo);
+    let tz: chrono_tz::Tz = config.timezone.parse().unwrap_or(chrono_tz::Asia::Tokyo);
     let current_time_formatted = Utc::now()
         .with_timezone(&tz)
         .format("%Y/%m/%d %H:%M:%S%.3f")
@@ -82,7 +78,9 @@ fn transmit_data_task(
                     let base_payload_bytes =
                         ImageFrame::prepare_hash_message(&hash_str, measured_voltage_percent);
                     let mut final_payload_str = String::from_utf8(base_payload_bytes)
-                        .unwrap_or_else(|_| format!("HASH:{},VOLT:{}", hash_str, measured_voltage_percent)); // Fallback if UTF-8 conversion fails
+                        .unwrap_or_else(|_| {
+                            format!("HASH:{},VOLT:{}", hash_str, measured_voltage_percent)
+                        }); // Fallback if UTF-8 conversion fails
                     final_payload_str.push(',');
                     final_payload_str.push_str(&current_time_formatted);
                     let final_payload_bytes = final_payload_str.into_bytes();
@@ -117,11 +115,14 @@ fn transmit_data_task(
                 }
             }
         }
-        None => { // 画像データがない場合 (低電圧など)
+        None => {
+            // 画像データがない場合 (低電圧など)
             let base_payload_bytes =
                 ImageFrame::prepare_hash_message(DUMMY_HASH, measured_voltage_percent);
-            let mut final_payload_str = String::from_utf8(base_payload_bytes)
-                .unwrap_or_else(|_| format!("HASH:{},VOLT:{}", DUMMY_HASH, measured_voltage_percent)); // Fallback
+            let mut final_payload_str =
+                String::from_utf8(base_payload_bytes).unwrap_or_else(|_| {
+                    format!("HASH:{},VOLT:{}", DUMMY_HASH, measured_voltage_percent)
+                }); // Fallback
             final_payload_str.push(',');
             final_payload_str.push_str(&current_time_formatted);
             let final_payload_bytes = final_payload_str.into_bytes();
@@ -170,7 +171,10 @@ fn main() -> anyhow::Result<()> {
     let mut wifi_option: Option<BlockingWifi<EspWifi<'static>>> = None;
 
     // rtcの現在時刻を取得しておく
-    let tz: chrono_tz::Tz = app_config.timezone.parse().unwrap_or(chrono_tz::Asia::Tokyo);
+    let tz: chrono_tz::Tz = app_config
+        .timezone
+        .parse()
+        .unwrap_or(chrono_tz::Asia::Tokyo);
     let mut rtc_time = Utc::now().with_timezone(&tz).date_naive(); // Initialize with RTC time
 
     // --- NVSから最終起動日を読み込む ---
@@ -207,16 +211,19 @@ fn main() -> anyhow::Result<()> {
     let mut sntp_performed_in_this_cycle = false;
 
     // --- 条件付き時刻同期処理 ---
-    let time_sync_needed_by_date = deep_sleep_controller.is_time_sync_required().unwrap_or(true);
+    let time_sync_needed_by_date = deep_sleep_controller
+        .is_time_sync_required()
+        .unwrap_or(true);
     let mut is_first_boot_today = true; // Default to true
-    
+
     // rtcの現在時刻が2025年以前の場合は電源OFFからの復旧のため時刻同期対象とする
     if rtc_time.year() < 2025 {
         info!("RTCの現在時刻が2025年以前のため、時刻同期が必要です。");
         let time_sync_needed_by_date = true;
     }
 
-    if let Some(ref last_boot_date_str) = last_boot_date_str_opt { // Changed to use ref
+    if let Some(ref last_boot_date_str) = last_boot_date_str_opt {
+        // Changed to use ref
         match NaiveDate::parse_from_str(last_boot_date_str, "%Y-%m-%d") {
             Ok(parsed_last_boot_date) => {
                 // current_date_for_nvs is already NaiveDate in the correct timezone
@@ -245,11 +252,16 @@ fn main() -> anyhow::Result<()> {
         info!("最終起動日の記録がNVSにないため、is_first_boot_today = true として扱います。");
         // Keep is_first_boot_today = true
     }
-    info!("初回起動フラグ (SNTP前): is_first_boot_today = {}", is_first_boot_today);
-
+    info!(
+        "初回起動フラグ (SNTP前): is_first_boot_today = {}",
+        is_first_boot_today
+    );
 
     if time_sync_needed_by_date || is_first_boot_today {
-        info!("時刻同期が必要です (日付による判断: {}, 本日初回起動: {})。", time_sync_needed_by_date, is_first_boot_today);
+        info!(
+            "時刻同期が必要です (日付による判断: {}, 本日初回起動: {})。",
+            time_sync_needed_by_date, is_first_boot_today
+        );
         led.blink_error()?; // SNTP試行中を示す点滅。エラーではないので、赤点滅ではなく青点滅にすることも検討
 
         let modem_taken = modem_peripheral_option
@@ -257,7 +269,11 @@ fn main() -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("Modem peripheral already taken"))?;
 
         let mut wifi = match BlockingWifi::wrap(
-            EspWifi::new(modem_taken, sysloop.clone(), Some(nvs_default_partition.clone()))?,
+            EspWifi::new(
+                modem_taken,
+                sysloop.clone(),
+                Some(nvs_default_partition.clone()),
+            )?,
             sysloop.clone(),
         ) {
             Ok(w) => w,
@@ -282,7 +298,8 @@ fn main() -> anyhow::Result<()> {
 
                 // SNTP成功後、last_boot_date_str_opt を再評価して is_first_boot_today を更新
                 // この時点でNVSにはまだ書き込んでいないが、ロジック上は今日の日付で判断すべき
-                if let Some(ref last_boot_date_str) = &last_boot_date_str_opt { // Re-borrow last_boot_date_str_opt
+                if let Some(ref last_boot_date_str) = &last_boot_date_str_opt {
+                    // Re-borrow last_boot_date_str_opt
                     match NaiveDate::parse_from_str(last_boot_date_str, "%Y-%m-%d") {
                         Ok(parsed_last_boot_date) => {
                             if parsed_last_boot_date == current_date_for_nvs {
@@ -293,14 +310,17 @@ fn main() -> anyhow::Result<()> {
                                 info!("SNTP後再評価: 最終起動日 ({}) は今日 ({}) ではありません。is_first_boot_today = true", parsed_last_boot_date, current_date_for_nvs);
                             }
                         }
-                        Err(_) => { /* パースエラーの場合は初回起動として扱う（既にログ済み） */ }
+                        Err(_) => { /* パースエラーの場合は初回起動として扱う（既にログ済み） */
+                        }
                     }
                 } else {
                     is_first_boot_today = true; // NVSに記録がなければ初回起動
                     info!("SNTP後再評価: NVSに記録なし。is_first_boot_today = true");
                 }
-                info!("初回起動フラグ (SNTP後): is_first_boot_today = {}", is_first_boot_today);
-
+                info!(
+                    "初回起動フラグ (SNTP後): is_first_boot_today = {}",
+                    is_first_boot_today
+                );
             }
             Err(e) => {
                 error!("SNTPによる時刻同期に失敗しました: {:?}", e);
@@ -316,10 +336,11 @@ fn main() -> anyhow::Result<()> {
         info!("時刻同期は不要です。スキップします。");
         // modem_peripheral_option は Some のままのはず
     }
-    
+
     // --- NVSに現在の日付を書き込む関数 (クロージャとして定義) ---
-    let store_current_date_to_nvs = |nvs_instance: &mut EspNvs<NvsDefault>| {
-        let date_str_to_store = current_date_for_nvs.format("%Y-%m-%d").to_string();
+    let store_current_date_to_nvs = |nvs_instance: &mut EspNvs<NvsDefault>,
+                                     naive_date: NaiveDate| {
+        let date_str_to_store = naive_date.format("%Y-%m-%d").to_string();
         match nvs_instance.set_str(NVS_KEY_LAST_BOOT_DATE, &date_str_to_store) {
             Ok(_) => info!("NVSに現在の日付を保存しました: {}", date_str_to_store),
             Err(e) => warn!("NVSへの日付の書き込みに失敗: {:?}", e),
@@ -329,14 +350,14 @@ fn main() -> anyhow::Result<()> {
     // 時刻同期が必要または本日初回起動の場合はNVSに日付を書き込んで DeepSleep する
     if time_sync_needed_by_date || is_first_boot_today {
         info!("初回起動日としてNVSに日付を書き込みます。");
-        store_current_date_to_nvs(&mut nvs);
+        store_current_date_to_nvs(&mut nvs, current_date_for_nvs);
         // DeepSleep する
         led.turn_off()?;
         if app_config.target_digits_config.is_some() {
-        info!("SNTP未実行 & ターゲットディジットモード: 通常の経過時間でスリープ");
-        let elapsed_time = loop_start_time.elapsed();
-        let _ = deep_sleep_controller.sleep_until_target_digits_match(elapsed_time);
-    } else {
+            info!("SNTP未実行 & ターゲットディジットモード: 通常の経過時間でスリープ");
+            let elapsed_time = loop_start_time.elapsed();
+            let _ = deep_sleep_controller.sleep_until_target_digits_match(elapsed_time);
+        } else {
             info!("1秒後に起動するDeepSleepを開始します。");
             let _ = deep_sleep_controller.sleep_for_duration(1)?;
         }
@@ -383,26 +404,26 @@ fn main() -> anyhow::Result<()> {
     drop(adc2);
     // --- 電圧測定ここまで ---
 
-
+    // 電圧ゼロの場合もESP-NOWでデータ送信を試みるためここでの処理はコメントアウト
     // --- measured_voltage_percent が 0% の場合はlongスリープ ---
-    if measured_voltage_percent == 0 {
-        info!(
-            "電圧が0%のため、{}秒間の長時間ディープスリープに入ります。",
-            app_config.sleep_duration_seconds_for_long
-        );
-        led.turn_off()?;
-        store_current_date_to_nvs(&mut nvs); // Store date before long sleep
-        match deep_sleep_controller.sleep_for_duration(app_config.sleep_duration_seconds_for_long) {
-            Ok(_) => { /* 通常ここには到達しない */ }
-            Err(e) => {
-                error!("長時間ディープスリープの開始に失敗: {:?}", e);
-                // エラーが発生した場合でも、フォールバックとして短時間のスリープを試みるか、
-                // またはパニックするなどのエラー処理が必要かもしれないが、
-                // DeepSleep::sleep_for_duration の現在の実装ではエラーから復帰しない想定
-            }
-        }
-        // ディープスリープから復帰することはないため、以降のコードは実行されない
-    }
+    // if measured_voltage_percent == 0 {
+    //     info!(
+    //         "電圧が0%のため、{}秒間の長時間ディープスリープに入ります。",
+    //         app_config.sleep_duration_seconds_for_long
+    //     );
+    //     led.turn_off()?;
+    //     store_current_date_to_nvs(&mut nvs, current_date_for_nvs); // Store date before long sleep
+    //     match deep_sleep_controller.sleep_for_duration(app_config.sleep_duration_seconds_for_long) {
+    //         Ok(_) => { /* 通常ここには到達しない */ }
+    //         Err(e) => {
+    //             error!("長時間ディープスリープの開始に失敗: {:?}", e);
+    //             // エラーが発生した場合でも、フォールバックとして短時間のスリープを試みるか、
+    //             // またはパニックするなどのエラー処理が必要かもしれないが、
+    //             // DeepSleep::sleep_for_duration の現在の実装ではエラーから復帰しない想定
+    //         }
+    //     }
+    //     // ディープスリープから復帰することはないため、以降のコードは実行されない
+    // }
     // --- ここまで measured_voltage_percent が 0% の場合の処理 ---
 
     // --- 画像取得タスク (低電圧時はスキップ) ---
@@ -526,18 +547,38 @@ fn main() -> anyhow::Result<()> {
         // エラーが発生してもスリープ処理は行う
     }
 
-    
     led.turn_off()?;
-    store_current_date_to_nvs(&mut nvs); // Store date before normal sleep
-    
+    store_current_date_to_nvs(&mut nvs, current_date_for_nvs); // Store date before normal sleep
+
     // --- スリープ処理 ---
     let elapsed_time = loop_start_time.elapsed();
     info!("メインループ処理時間 : {:?}", elapsed_time);
-    info!("固定インターバルモードでスリープ");
-    let _ = deep_sleep_controller.sleep(
-        elapsed_time,
-        min_sleep_duration,
-    );
+    // 電圧ゼロの場合は ミディアムスリープ or ロングスリープ、そうでない場合は固定インターバルでスリープ
+    if measured_voltage_percent == 0 {
+        // 現在時間が午前の場合はミディアムスリープ、午後の場合はロングスリープ
+        let current_hour = Utc::now().with_timezone(&tz).hour();
+        if current_hour < 12 {
+            info!(
+                "電圧が0%のため、{}秒間の中時間ディープスリープに入ります。",
+                app_config.sleep_duration_seconds_for_medium
+            );
+            let _ = deep_sleep_controller.sleep_for_duration(app_config.sleep_duration_seconds_for_medium)?;
+        } else {
+            info!(
+                "電圧が0%のため、{}秒間の長時間ディープスリープに入ります。",
+                app_config.sleep_duration_seconds_for_long
+            );
+            let _ = deep_sleep_controller.sleep_for_duration(app_config.sleep_duration_seconds_for_long)?;
+        }
+        // ディープスリープから復帰することはないため、以降のコードは実行されない
+        return Ok(()); // 明示的に終了
+    }else{
+        info!(
+            "電圧が0%ではないため、固定インターバルモードでスリープします。経過時間: {:?}",
+            elapsed_time
+        );
+        let _ = deep_sleep_controller.sleep(elapsed_time, min_sleep_duration);
+    }
 
     Ok(())
 }

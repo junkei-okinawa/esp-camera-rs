@@ -12,6 +12,9 @@ pub struct Config {
     #[default(60)]
     sleep_duration_seconds: u64,
 
+    #[default(3600)] // Default to 30 minutes
+    sleep_duration_seconds_for_medium: u64,
+
     #[default(3600)]
     sleep_duration_seconds_for_long: u64,
 
@@ -76,6 +79,9 @@ pub struct AppConfig {
     /// ディープスリープ時間（秒）
     pub sleep_duration_seconds: u64,
 
+    /// 日の出までの調整スリープ時間（秒）
+    pub sleep_duration_seconds_for_medium: u64,
+
     /// ディープスリープ時間（長時間用、秒）
     pub sleep_duration_seconds_for_long: u64,
 
@@ -123,6 +129,7 @@ impl AppConfig {
 
         // ディープスリープ時間を設定
         let sleep_duration_seconds = config.sleep_duration_seconds;
+        let sleep_duration_seconds_for_medium = config.sleep_duration_seconds_for_medium;
         let sleep_duration_seconds_for_long = config.sleep_duration_seconds_for_long;
 
         // フレームサイズを設定
@@ -194,6 +201,7 @@ impl AppConfig {
         Ok(AppConfig {
             receiver_mac,
             sleep_duration_seconds,
+            sleep_duration_seconds_for_medium,
             sleep_duration_seconds_for_long,
             frame_size,
             auto_exposure_enabled,
@@ -218,6 +226,7 @@ mod tests {
     fn simulate_app_config_creation(
         receiver_mac_str: &str,
         sleep_duration: u64,
+        sleep_duration_medium: u64,
         sleep_duration_for_long: u64,
         frame_size_str: &str,
         auto_exposure: bool,
@@ -273,6 +282,7 @@ mod tests {
         Ok(Box::new(AppConfig {
             receiver_mac: mac,
             sleep_duration_seconds: sleep_duration,
+            sleep_duration_seconds_for_medium: sleep_duration_medium,
             sleep_duration_seconds_for_long: sleep_duration_for_long,
             frame_size: frame_size_str.to_string(),
             auto_exposure_enabled: auto_exposure,
@@ -290,6 +300,7 @@ mod tests {
         let config = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -303,6 +314,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.receiver_mac.to_string(), "00:11:22:33:44:55");
         assert_eq!(config.sleep_duration_seconds, 30);
+        assert_eq!(config.sleep_duration_seconds_for_medium, 900);
         assert_eq!(config.sleep_duration_seconds_for_long, 1800);
         assert_eq!(config.frame_size, "QVGA");
         assert!(config.auto_exposure_enabled);
@@ -326,6 +338,7 @@ mod tests {
         let config = simulate_app_config_creation(
             "AA:BB:CC:DD:EE:FF",
             60,
+            1200,
             3600,
             "SVGA",
             false,
@@ -348,6 +361,7 @@ mod tests {
         let result = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -369,6 +383,7 @@ mod tests {
         let result = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -390,6 +405,7 @@ mod tests {
         let result = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -438,6 +454,7 @@ mod tests {
         let result = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -457,6 +474,7 @@ mod tests {
          let config = simulate_app_config_creation(
             "00:11:22:33:44:55",
             30,
+            900,
             1800,
             "QVGA",
             true,
@@ -477,6 +495,7 @@ mod tests {
         let config = simulate_app_config_creation(
             "00:11:22:33:44:55",
             60,
+            1200,
             3600,
             "SVGA",
             false,
@@ -500,6 +519,7 @@ mod tests {
         let config = simulate_app_config_creation(
             "00:11:22:33:44:55",
             60,
+            1200,
             3600,
             "SVGA",
             false,

@@ -22,7 +22,7 @@ const SNTP_RETRY_DELAY_MS_IN_PROGRESS: u64 = 2000; // 2 seconds
 const SNTP_RETRY_DELAY_MS_OTHER: u64 = 5000; // 5 seconds
 
 // Constant for sleep logic
-const MIN_SLEEP_SECONDS_IN_TSLD_MODE: i64 = 11; // Minimum sleep if target_second_last_digit is used
+// const MIN_SLEEP_SECONDS_IN_TSLD_MODE: i64 = 11; // Minimum sleep if target_second_last_digit is used
 
 
 #[derive(Debug, thiserror::Error)]
