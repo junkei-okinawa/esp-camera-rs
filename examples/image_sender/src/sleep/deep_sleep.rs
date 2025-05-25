@@ -787,6 +787,7 @@ mod tests {
 
     fn create_test_config(
         sleep_duration_seconds: u64,
+        sleep_duration_seconds_for_medium: u64, // 追加
         target_minute_last_digit: Option<u8>,
         target_second_tens_digit: Option<u8>,
         sleep_compensation_micros: i64, // 追加
@@ -794,6 +795,7 @@ mod tests {
         Arc::new(AppConfig {
             receiver_mac: MacAddress::from_str("00:11:22:33:44:55").unwrap(),
             sleep_duration_seconds,
+            sleep_duration_seconds_for_medium, // 追加
             sleep_duration_seconds_for_long: 3600,
             frame_size: "VGA".to_string(),
             auto_exposure_enabled: true,
@@ -815,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_fixed_interval_sleep_with_compensation() {
-        let config = create_test_config(600, None, None, 500_000); // 0.5秒補正
+        let config = create_test_config(600, 600, None, None, 500_000); // 0.5秒補正
         let platform = MockPlatform::new();
         let deep_sleep_controller = DeepSleep::new(config, platform);
 
@@ -834,7 +836,7 @@ mod tests {
 
     #[test]
     fn test_fixed_interval_sleep_with_negative_compensation() {
-        let config = create_test_config(600, None, None, -2_000_000); // -2秒補正
+        let config = create_test_config(600, 600, None, None, -2_000_000); // -2秒補正
         let platform = MockPlatform::new();
         let deep_sleep_controller = DeepSleep::new(config, platform);
 
@@ -851,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_fixed_interval_sleep_exceeding_interval() {
-        let config = create_test_config(60, None, None, 100_000); // 0.1秒補正
+        let config = create_test_config(60, 60, None, None, 100_000); // 0.1秒補正
         let platform = MockPlatform::new();
         let deep_sleep_controller = DeepSleep::new(config, platform);
 
@@ -872,7 +874,7 @@ mod tests {
     #[test]
     fn test_fixed_interval_sleep_zero_calculated_duration() {
         // このテストは、補正前の計算結果が0になるケース
-        let config = create_test_config(30, None, None, 200_000); // 0.2秒補正
+        let config = create_test_config(30, 30, None, None, 200_000); // 0.2秒補正
         let platform = MockPlatform::new();
         let deep_sleep_controller = DeepSleep::new(config, platform);
 
@@ -890,7 +892,7 @@ mod tests {
         );
 
         // 補正によって0になるケース
-        let config_neg_comp = create_test_config(30, None, None, -2_000_000); // -2秒補正
+        let config_neg_comp = create_test_config(30, 30, None, None, -2_000_000); // -2秒補正
         let platform_neg_comp = MockPlatform::new();
         let deep_sleep_controller_neg_comp = DeepSleep::new(config_neg_comp, platform_neg_comp);
         let _ = deep_sleep_controller_neg_comp.sleep(StdDuration::from_secs(28), StdDuration::from_secs(3));
@@ -904,9 +906,9 @@ mod tests {
         );
     }
 
-     #[test]
+    #[test]
     fn test_fixed_interval_sleep_zero_calculated_and_zero_min_duration() {
-        let config = create_test_config(10, None, None, -10_000_000); // -10秒補正
+        let config = create_test_config(10, 10, None, None, -10_000_000); // -10秒補正
         let platform = MockPlatform::new();
         let deep_sleep_controller = DeepSleep::new(config, platform);
 
@@ -924,14 +926,9 @@ mod tests {
         );
     }
 
-    // sleep_until_target_digits_match のテストは sleep_compensation_micros に直接依存しないため、
-    // 既存のテストをそのまま利用するか、必要に応じて create_test_config にデフォルトの補正値 (例: 0) を渡すように修正します。
-    // ここでは、create_test_config が修正されたので、既存のテストも影響を受ける可能性があります。
-    // sleep_until_target_digits_match のテストケースも sleep_compensation_micros を渡すように修正します。
-
     #[test]
     fn test_sleep_until_target_digits_match_no_targets() {
-        let config = create_test_config(600, None, None, 0); // 補正なし
+        let config = create_test_config(600, 600, None, None, 0); // 補正なし
         let platform = MockPlatform::new();
         let mut deep_sleep_controller = DeepSleep::new(config, platform);
         let result =
