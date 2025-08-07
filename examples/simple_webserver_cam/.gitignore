@@ -1,0 +1,5 @@
+/.vscode
+/.embuild
+/target
+
+src/wifi_config.rs

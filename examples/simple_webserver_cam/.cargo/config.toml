@@ -1,0 +1,16 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor" # Select this runner for espflash v1.x.x
+rustflags = [ "--cfg",  "espidf_time64"] # Extending time_t for ESP IDF 5:
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU="esp32s3"
+ESP_IDF_VERSION = "v5.1.3"
+
+CARGO_WORKSPACE_DIR = { value = "", relative = true }

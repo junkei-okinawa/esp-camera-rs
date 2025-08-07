@@ -33,7 +33,7 @@ impl<'a> Camera<'a> {
 
             jpeg_quality: params.jpeg_quality,
             fb_count: params.fb_count,
-            grab_mode: camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY,
+            grab_mode: params.grab_mode,
 
             fb_location: params.fb_location,
 
@@ -279,6 +279,7 @@ pub struct CameraParams<'a> {
     fb_location: camera::camera_fb_location_t,
     jpeg_quality: i32,
     fb_count: usize,
+    grab_mode: camera::camera_grab_mode_t,
     _p: PhantomData<&'a ()>,
 }
 
@@ -306,6 +307,7 @@ impl CameraParams<'static> {
             fb_location: camera::camera_fb_location_t_CAMERA_FB_IN_PSRAM,
             jpeg_quality: 12,
             fb_count: 1,
+            grab_mode: camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY,
             _p: PhantomData,
         }
     }
@@ -362,4 +364,5 @@ impl<'a> CameraParams<'a> {
     define_set_plain_function!(jpeg_quality, i32);
     define_set_plain_function!(fb_count, usize);
     define_set_plain_function!(xclk_freq_hz, i32);
+    define_set_plain_function!(grab_mode, camera::camera_grab_mode_t);
 }

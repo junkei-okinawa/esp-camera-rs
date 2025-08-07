@@ -1,0 +1,27 @@
+[package]
+name = "esp32s3-sense-cam"
+version = "0.1.0"
+authors = ["junkei-okinawa"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.86.0"
+
+[profile.release]
+opt-level = 2
+lto = true
+
+[profile.dev]
+debug = true    # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[dependencies]
+log = "0.4"
+anyhow = "1.0.79"
+esp-idf-svc = "0.51.0"
+esp-idf-hal = "0.45.1"
+esp-idf-sys = "0.36.1"
+embedded-svc = "0.28.1"
+esp-camera-rs = { path = "../../" }
+
+[build-dependencies]
+embuild = "0.33"
