@@ -1,6 +1,7 @@
 use std::ffi::c_int;
 use std::marker::PhantomData;
 
+use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio::*;
 use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_sys::*;
@@ -10,7 +11,7 @@ impl<'a> Camera<'a> {
         let config = camera::camera_config_t {
             pin_pwdn: params.power,
             pin_xclk: params.clock,
-            pin_reset: -1,
+            pin_reset: params.reset,
             pin_d0: params.d0,
             pin_d1: params.d1,
             pin_d2: params.d2,
@@ -47,7 +48,10 @@ impl<'a> Camera<'a> {
         };
 
         esp_idf_sys::esp!(unsafe { camera::esp_camera_init(&config) })?;
-        Ok(Self { _p: PhantomData })
+        Ok(Self {
+            reset: params.reset,
+            _p: PhantomData,
+        })
     }
 
     pub fn get_framebuffer(&self) -> Option<FrameBuffer> {
@@ -67,6 +71,17 @@ impl<'a> Camera<'a> {
             sensor: unsafe { camera::esp_camera_sensor_get() },
             _p: PhantomData,
         }
+    }
+
+    pub fn pulse_reset_pin(&self, low_ms: u32, high_ms: u32) -> Result<(), EspError> {
+        if self.reset < 0 {
+            return Ok(());
+        }
+        esp!(unsafe { gpio_set_level(self.reset, 0) })?;
+        FreeRtos::delay_ms(low_ms);
+        esp!(unsafe { gpio_set_level(self.reset, 1) })?;
+        FreeRtos::delay_ms(high_ms);
+        Ok(())
     }
 }
 
@@ -254,11 +269,13 @@ impl<'a> CameraSensor<'a> {
 }
 
 pub struct Camera<'a> {
+    reset: c_int,
     _p: PhantomData<&'a ()>,
 }
 
 pub struct CameraParams<'a> {
     power: c_int,
+    reset: c_int,
     clock: c_int,
     d0: c_int,
     d1: c_int,
@@ -286,6 +303,7 @@ impl CameraParams<'static> {
     pub fn new() -> CameraParams<'static> {
         Self {
             power: -1,
+            reset: -1,
             clock: -1,
             d0: -1,
             d1: -1,
@@ -342,6 +360,7 @@ macro_rules! define_set_plain_function {
 
 impl<'a> CameraParams<'a> {
     define_set_pin_function!(power, OutputPin);
+    define_set_pin_function!(reset, OutputPin);
     define_set_pin_function!(clock, OutputPin);
     define_set_pin_function!(d0, IOPin);
     define_set_pin_function!(d1, IOPin);
