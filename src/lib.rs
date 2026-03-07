@@ -207,8 +207,12 @@ impl<'a> CameraSensor<'a> {
     define_get_set_function!(raw_gma, set_raw_gma, bool);
     define_get_set_function!(lenc, set_lenc, bool);
 
-    pub fn get_reg(&self, reg: i32, mask: i32) -> Result<(), EspError> {
-        esp!(unsafe { (*self.sensor).get_reg.unwrap()(self.sensor, reg, mask) })
+    pub fn get_reg(&self, reg: i32, mask: i32) -> Result<i32, EspError> {
+        let value = unsafe { (*self.sensor).get_reg.unwrap()(self.sensor, reg, mask) };
+        if value < 0 {
+            return Err(EspError::from_infallible::<ESP_FAIL>());
+        }
+        Ok(value)
     }
     pub fn set_reg(&self, reg: i32, mask: i32, value: i32) -> Result<(), EspError> {
         esp!(unsafe { (*self.sensor).set_reg.unwrap()(self.sensor, reg, mask, value) })
