@@ -165,6 +165,14 @@ macro_rules! define_get_set_function {
 }
 
 impl<'a> CameraSensor<'a> {
+    pub fn pid(&self) -> u16 {
+        unsafe { (*self.sensor).id.PID }
+    }
+
+    pub fn sccb_addr(&self) -> u8 {
+        unsafe { (*self.sensor).slv_addr }
+    }
+
     pub fn init_status(&self) -> Result<(), EspError> {
         esp!(unsafe { (*self.sensor).init_status.unwrap()(self.sensor) })
     }
